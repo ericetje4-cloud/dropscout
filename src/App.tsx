@@ -3,12 +3,14 @@
 // providers (Toasts). Affiche un splash le temps de l'init IndexedDB.
 // ===========================================================================
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { initStore, useStore } from '@/hooks/useStore';
 import { setupPWA } from '@/lib/pwa';
 import { getSetting } from '@/lib/db';
 import { setApiKey, setModel, DEFAULT_MODEL } from '@/lib/gemini';
 import { setDisplayCurrency } from '@/lib/format';
+import { refreshDueNiches } from '@/lib/refresh';
+import { registerNicheRefresh } from '@/lib/background-sync';
 import { useNavigation } from '@/hooks/useNavigation';
 import { ToastProvider } from '@/components/ui';
 import { DashboardPage } from '@/pages/DashboardPage';
@@ -34,10 +36,69 @@ export default function App() {
       const currency = await getSetting('currency');
       if (currency) setDisplayCurrency(currency);
       setupPWA();
-      if (!cancelled) setInited(true);
+      if (cancelled) return;
+      setInited(true);
+
+      // --- Veille automatique (3 couches) ---
+      const autoRefresh = (await getSetting('autoRefreshEnabled')) ?? true; // activé par défaut
+
+      if (autoRefresh) {
+        // Couche 3 : Periodic Background Sync (arrière-plan réel, Chromium + installé).
+        const hours = (await getSetting('refreshIntervalHours')) ?? 24;
+        void registerNicheRefresh(hours * 60 * 60 * 1000).catch(() => {});
+
+        // Couche 1 : catch-up silencieux à l'ouverture (garanti, tous navigateurs).
+        void refreshDueNiches().catch((e) => console.warn('[veille] catch-up', e));
+      }
     })();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Couche 2 : minuteur premier plan — re-vérifie périodiquement tant que
+  // l'app est visible. Mis en pause quand elle passe en arrière-plan.
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => {
+    let active = false;
+
+    async function start() {
+      if (active) return;
+      active = true;
+      const enabled = (await getSetting('autoRefreshEnabled')) ?? true;
+      if (!enabled) return;
+      const hours = (await getSetting('refreshIntervalHours')) ?? 24;
+      // Tick toutes les 10 min : peu coûteux (refreshDueNiches n'agit que sur les
+      // niches dues ; les autres sont ignorées sans appel réseau).
+      timerRef.current = window.setInterval(
+        () => {
+          if (document.visibilityState === 'visible') {
+            void refreshDueNiches().catch(() => {});
+          }
+        },
+        Math.min(hours * 60 * 60 * 1000, 10 * 60 * 1000),
+      );
+    }
+
+    function stop() {
+      active = false;
+      if (timerRef.current != null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+
+    // (Re)démarre quand l'app redevient visible (revient au premier plan).
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void start();
+      else stop();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    void start();
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      stop();
     };
   }, []);
 

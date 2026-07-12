@@ -1,47 +1,72 @@
 // ===========================================================================
-// Page Discover : 2 actions phares du Pilier A.
+// Page Discover : 3 actions du Pilier A.
 //   1. Analyse d'un produit (URL ou description) → score IA + rapport.
 //   2. Veille d'une niche (Google Search grounding) → rapport + sources.
+//   3. Surveillées : niches suivies, rafraîchies automatiquement.
 // ===========================================================================
 
-import { useState } from 'react';
-import { Telescope, Sparkles, Loader2, ExternalLink, Save } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Telescope, Sparkles, Loader2, ExternalLink, Save, Bell, Trash2 } from 'lucide-react';
 import { Layout } from '@/components/Layout';
 import { Field, ScoreBar, scoreColor, useToast, EmptyState } from '@/components/ui';
-import { addProduct } from '@/hooks/useStore';
+import { addProduct, useStore, addNiche, removeNiche } from '@/hooks/useStore';
+import { getSetting, setSetting } from '@/lib/db';
 import { analyzeProduct, researchNiche } from '@/lib/research';
+import { refreshNiche } from '@/lib/refresh';
 import { scoreProduct } from '@/lib/scoring';
 import { computeMargin } from '@/lib/scoring';
-import { formatMoney, getDisplayCurrency } from '@/lib/format';
+import { formatMoney, formatRelative, getDisplayCurrency, toISODate } from '@/lib/format';
 import { hasApiKey } from '@/lib/gemini';
-import type { ProductScore } from '@/types';
+import type { Niche, ProductScore } from '@/types';
 
-type Tab = 'analyze' | 'niche';
+type Tab = 'analyze' | 'niche' | 'watched';
 
 export function DiscoverPage() {
   const [tab, setTab] = useState<Tab>('analyze');
+  const { niches } = useStore();
+  const watchedCount = niches.length;
+
   return (
     <Layout title="Découvrir">
       <div className="mb-4 flex rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
         <button
           onClick={() => setTab('analyze')}
-          className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-medium transition-colors ${
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-colors sm:text-sm ${
             tab === 'analyze' ? 'bg-white shadow-card dark:bg-slate-900' : 'text-slate-500'
           }`}
         >
-          <Sparkles size={15} /> Analyser un produit
+          <Sparkles size={15} /> Analyser
         </button>
         <button
           onClick={() => setTab('niche')}
-          className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-medium transition-colors ${
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-colors sm:text-sm ${
             tab === 'niche' ? 'bg-white shadow-card dark:bg-slate-900' : 'text-slate-500'
           }`}
         >
-          <Telescope size={15} /> Veiller une niche
+          <Telescope size={15} /> Veiller
+        </button>
+        <button
+          onClick={() => setTab('watched')}
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-colors sm:text-sm ${
+            tab === 'watched' ? 'bg-white shadow-card dark:bg-slate-900' : 'text-slate-500'
+          }`}
+        >
+          <Bell size={15} /> Surveillées
+          {watchedCount > 0 && (
+            <span className="rounded-full bg-brand-600 px-1.5 text-[10px] text-white">
+              {watchedCount}
+            </span>
+          )}
         </button>
       </div>
 
-      {tab === 'analyze' ? <AnalyzePanel /> : <NichePanel />}
+      {tab === 'analyze' ? (
+        <AnalyzePanel />
+      ) : tab === 'niche' ? (
+        <NichePanel />
+      ) : (
+        <WatchedPanel />
+      )}
     </Layout>
   );
 }
@@ -288,10 +313,17 @@ interface NicheResult {
 
 function NichePanel() {
   const { toast } = useToast();
+  const { niches } = useStore();
   const [niche, setNiche] = useState('');
   const [region, setRegion] = useState('FR');
   const [busy, setBusy] = useState(false);
+  const [watching, setWatching] = useState(false);
   const [result, setResult] = useState<NicheResult | null>(null);
+
+  // true si la niche courante est déjà surveillée.
+  const alreadyWatched = niches.some(
+    (n) => n.label.toLowerCase() === niche.trim().toLowerCase() && n.region === (region || 'FR'),
+  );
 
   async function run() {
     if (!niche.trim()) {
@@ -311,6 +343,25 @@ function NichePanel() {
       toast((e as Error).message, 'error');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function watch() {
+    if (!niche.trim() || !result) return;
+    setWatching(true);
+    try {
+      await addNiche({
+        label: niche.trim(),
+        region: region || 'FR',
+        lastReport: result.report,
+        lastSources: result.sources,
+        lastCheckedAt: toISODate(new Date()),
+      });
+      toast(`« ${niche.trim()} » est maintenant surveillée 🔔`, 'success');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setWatching(false);
     }
   }
 
@@ -382,8 +433,140 @@ function NichePanel() {
               </ul>
             </div>
           )}
+
+          {/* Surveiller : ajoute la niche au rafraîchissement automatique */}
+          <button
+            onClick={() => void watch()}
+            disabled={watching || alreadyWatched}
+            className="btn-secondary w-full"
+          >
+            {alreadyWatched ? (
+              '🔔 Déjà surveillée'
+            ) : watching ? (
+              <Loader2 size={15} className="animate-spin" />
+            ) : (
+              <>
+                <Bell size={15} /> Surveiller cette niche (auto-refresh)
+              </>
+            )}
+          </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Panneau niches surveillées (rafraîchies automatiquement)
+// ---------------------------------------------------------------------------
+
+function WatchedPanel() {
+  const { toast } = useToast();
+  const { niches } = useStore();
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [seenAt, setSeenAt] = useState<number>(0);
+
+  // Charge le timestamp de dernière visite pour le badge "nouveauté".
+  useEffect(() => {
+    void getSetting('nichesSeenAt').then((t) => setSeenAt(t ?? 0));
+  }, []);
+
+  // Marque comme "vu" au montage du panneau.
+  useEffect(() => {
+    void setSetting('nichesSeenAt', Date.now());
+  }, []);
+
+  async function refreshOne(n: Niche) {
+    if (!hasApiKey()) {
+      toast('Ajoute ta clé Gemini dans les Réglages.', 'warning');
+      return;
+    }
+    setRefreshingId(n.id);
+    try {
+      await refreshNiche(n);
+      toast(`« ${n.label} » actualisée ✓`, 'success');
+    } catch (e) {
+      toast(`Échec : ${(e as Error).message}`, 'error');
+    } finally {
+      setRefreshingId(null);
+    }
+  }
+
+  if (niches.length === 0) {
+    return (
+      <div className="card">
+        <EmptyState
+          icon="🔔"
+          title="Aucune niche surveillée"
+          description="Lance une veille puis clique sur « Surveiller » pour qu'elle s'actualise automatiquement."
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">
+        Les niches surveillées sont rafraîchies automatiquement (selon l'intervalle
+        défini dans les Réglages). Ouvre l'app pour déclencher le rafraîchissement si
+        l'arrière-plan n'est pas supporté.
+      </p>
+      {niches.map((n) => {
+        const lastTs = n.lastCheckedAt ? new Date(n.lastCheckedAt).getTime() : 0;
+        const isNew = lastTs > seenAt && seenAt > 0;
+        return (
+          <div key={n.id} className="card p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="truncate font-medium">{n.label}</p>
+                  {isNew && (
+                    <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-950/40 dark:text-green-300">
+                      🆕 Actualisé
+                    </span>
+                  )}
+                  <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800">
+                    {n.region}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  {n.lastCheckedAt
+                    ? `Dernière veille ${formatRelative(n.lastCheckedAt)}`
+                    : 'Jamais rafraîchie'}
+                </p>
+              </div>
+            </div>
+
+            {n.lastReport && (
+              <p className="mt-2 line-clamp-4 whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300">
+                {n.lastReport}
+              </p>
+            )}
+
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => void refreshOne(n)}
+                disabled={refreshingId === n.id}
+                className="btn-secondary flex-1 text-xs"
+              >
+                {refreshingId === n.id ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Telescope size={13} />
+                )}
+                Rafraîchir
+              </button>
+              <button
+                onClick={() => void removeNiche(n.id).then(() => toast('Niche retirée.', 'info'))}
+                className="rounded-xl bg-red-50 p-2.5 text-red-600 hover:bg-red-100 dark:bg-red-950/30"
+                aria-label="Ne plus surveiller"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

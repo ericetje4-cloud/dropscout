@@ -114,9 +114,28 @@ proxy/
 
 ---
 
+## 🔔 Rafraîchissement automatique de la veille
+
+Les niches surveillées (onglet **Découvrir → Surveillées**) s'actualisent automatiquement
+grâce à 3 couches complémentaires :
+
+| Couche | Quand | Couverture |
+|---|---|---|
+| **Catch-up à l'ouverture** | à chaque lancement de l'app | tous navigateurs |
+| **Minuteur premier plan** | tant que l'app est ouverte | tous navigateurs |
+| **Periodic Background Sync** | en arrière-plan, app fermée | Chrome/Edge + PWA installée |
+
+Le **Réglages → Veille automatique** affiche le diagnostic réel de votre appareil
+(PWA installée ? arrière-plan supporté ? notifications autorisées ?) pour savoir
+exactement ce qui marchera.
+
+**Pour activer l'arrière-plan** : installez l'app (icône sur l'écran d'accueil) sur
+Chrome ou Edge, puis activez le toggle dans Réglages — les notifications préviennent
+des nouveautés.
+
 ## Limitations connues
 
-- **Veille automatique en arrière-plan** : une PWA statique ne gère pas de cron
-  fiable. Le rafraîchissement se fait à la demande (bouton « Lancer la veille »).
+- **Arrière-plan limité à Chromium** : Safari et Firefox ne supportent pas
+  Periodic Background Sync — la veille s'y actualise à l'ouverture + premier plan.
 - **Quota Gemini** : la clé gratuite AI Studio a des limites (requêtes/min/jour).
 - **Proxy mono-utilisateur** : ajoute `PROXY_KEY` pour un usage partagé.

@@ -18,6 +18,8 @@ import {
   RefreshCw,
   Share2,
   Store,
+  Bell,
+  BellRing,
 } from 'lucide-react';
 import { useStore, exportStore, importStore, resetStore } from '@/hooks/useStore';
 import { useTheme, type ThemeMode } from '@/hooks/useTheme';
@@ -34,6 +36,15 @@ import {
   AVAILABLE_MODELS,
 } from '@/lib/gemini';
 import { setDisplayCurrency, getDisplayCurrency } from '@/lib/format';
+import {
+  registerNicheRefresh,
+  unregisterNicheRefresh,
+  requestNotificationPermission,
+  getAutoRefreshStatus,
+  explainStatus,
+  type AutoRefreshStatus,
+} from '@/lib/background-sync';
+import { refreshDueNiches, DEFAULT_INTERVAL_HOURS } from '@/lib/refresh';
 import type { BackupPayload } from '@/types';
 
 const CURRENCIES = ['EUR', 'USD', 'GBP', 'CAD', 'AUD', 'CHF'];
@@ -56,6 +67,12 @@ export function SettingsPage() {
   const [currency, setCurrencyState] = useState('EUR');
   const [proxyUrl, setProxyUrl] = useState('');
 
+  // Veille automatique
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [intervalH, setIntervalH] = useState(DEFAULT_INTERVAL_HOURS);
+  const [refreshStatus, setRefreshStatus] = useState<AutoRefreshStatus | null>(null);
+  const [testBusy, setTestBusy] = useState(false);
+
   useEffect(() => {
     (async () => {
       const k = await getSetting('geminiKey');
@@ -66,6 +83,11 @@ export function SettingsPage() {
       if (c) setCurrencyState(c);
       const p = await getSetting('proxyUrl');
       if (p) setProxyUrl(p);
+      const ar = await getSetting('autoRefreshEnabled');
+      setAutoRefresh(ar ?? true);
+      const iv = await getSetting('refreshIntervalHours');
+      setIntervalH(iv ?? DEFAULT_INTERVAL_HOURS);
+      setRefreshStatus(await getAutoRefreshStatus());
     })();
   }, []);
 
@@ -104,6 +126,66 @@ export function SettingsPage() {
     const trimmed = proxyUrl.trim().replace(/\/$/, '');
     await setSetting('proxyUrl', trimmed);
     toast(trimmed ? 'Proxy enregistré ✓' : 'Proxy effacé.', trimmed ? 'success' : 'info');
+  }
+
+  // --- Veille automatique ---
+
+  async function toggleAutoRefresh(on: boolean) {
+    setAutoRefresh(on);
+    await setSetting('autoRefreshEnabled', on);
+    if (on) {
+      // Demande la permission notifications + inscrit le periodic sync.
+      if ('Notification' in window && Notification.permission === 'default') {
+        await requestNotificationPermission();
+      }
+      const ok = await registerNicheRefresh(intervalH * 60 * 60 * 1000);
+      setRefreshStatus(await getAutoRefreshStatus());
+      toast(
+        ok
+          ? 'Veille auto activée ✓'
+          : 'Veille auto activée (catch-up à l\'ouverture + premier plan).',
+        'success',
+      );
+    } else {
+      await unregisterNicheRefresh();
+      setRefreshStatus(await getAutoRefreshStatus());
+      toast('Veille auto désactivée.', 'info');
+    }
+  }
+
+  async function changeInterval(h: number) {
+    setIntervalH(h);
+    await setSetting('refreshIntervalHours', h);
+    // Ré-inscrit le periodic sync avec le nouvel intervalle si actif.
+    if (autoRefresh) {
+      await registerNicheRefresh(h * 60 * 60 * 1000);
+      setRefreshStatus(await getAutoRefreshStatus());
+    }
+  }
+
+  async function enableNotifications() {
+    const perm = await requestNotificationPermission();
+    setRefreshStatus(await getAutoRefreshStatus());
+    toast(
+      perm === 'granted' ? 'Notifications autorisées ✓' : 'Notifications refusées.',
+      perm === 'granted' ? 'success' : 'warning',
+    );
+  }
+
+  async function testRefresh() {
+    setTestBusy(true);
+    try {
+      const r = await refreshDueNiches({ force: true });
+      if (r.refreshed.length > 0) {
+        toast(`${r.refreshed.length} niche(s) actualisée(s) ✓`, 'success');
+      } else {
+        toast('Aucune niche surveillée à rafraîchir.', 'info');
+      }
+    } catch (e) {
+      toast(`Échec : ${(e as Error).message}`, 'error');
+    } finally {
+      setTestBusy(false);
+    }
   }
 
   async function doExport() {
@@ -234,6 +316,82 @@ export function SettingsPage() {
           <p className="text-xs text-slate-400">Actuelle : {getDisplayCurrency()}</p>
         </Section>
 
+        {/* Veille automatique */}
+        <Section title="Veille automatique" icon={<Bell size={15} />}>
+          {/* Toggle */}
+          <button
+            onClick={() => void toggleAutoRefresh(!autoRefresh)}
+            className="flex w-full items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 dark:bg-slate-800/60"
+          >
+            <span className="flex items-center gap-2 text-sm font-medium">
+              {autoRefresh ? <BellRing size={15} className="text-brand-600" /> : <Bell size={15} className="text-slate-400" />}
+              Rafraîchissement auto
+            </span>
+            <span
+              className={`relative h-6 w-11 rounded-full transition-colors ${
+                autoRefresh ? 'bg-brand-600' : 'bg-slate-300 dark:bg-slate-600'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
+                  autoRefresh ? 'translate-x-[22px]' : 'translate-x-0.5'
+                }`}
+              />
+            </span>
+          </button>
+
+          {autoRefresh && (
+            <>
+              <Field label="Intervalle">
+                <select
+                  value={intervalH}
+                  onChange={(e) => void changeInterval(Number(e.target.value))}
+                  className="input"
+                >
+                  <option value={6}>Toutes les 6 heures</option>
+                  <option value={12}>Toutes les 12 heures</option>
+                  <option value={24}>Toutes les 24 heures</option>
+                </select>
+              </Field>
+
+              {/* Notifications */}
+              {refreshStatus && refreshStatus.notificationPermission !== 'granted' && (
+                <button onClick={() => void enableNotifications()} className="btn-secondary w-full">
+                  <Bell size={15} /> Activer les notifications
+                </button>
+              )}
+
+              {/* Test manuel */}
+              <button onClick={() => void testRefresh()} disabled={testBusy} className="btn-secondary w-full">
+                {testBusy ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+                Tester le rafraîchissement maintenant
+              </button>
+
+              {/* Diagnostics */}
+              {refreshStatus && (
+                <div className="space-y-1 rounded-lg bg-slate-50 p-3 text-xs dark:bg-slate-800/60">
+                  <DiagRow ok={refreshStatus.installed} label="PWA installée" />
+                  <DiagRow ok={refreshStatus.periodicSyncSupported} label="Rafraîch. arrière-plan supporté" />
+                  <DiagRow
+                    ok={refreshStatus.notificationPermission === 'granted'}
+                    label="Notifications autorisées"
+                  />
+                  <DiagRow ok={refreshStatus.registered} label="Tâche planifiée inscrite" />
+                  <p className="pt-1 text-slate-500 dark:text-slate-400">
+                    {explainStatus(refreshStatus)}
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+
+          <p className="text-xs text-slate-400">
+            {niches.length} niche(s) surveillée(s). La veille s'actualise à l'ouverture
+            de l'app et en premier plan sur tous les navigateurs ; en arrière-plan sur
+            Chrome/Edge si l'app est installée.
+          </p>
+        </Section>
+
         {/* Proxy boutiques */}
         <Section title="Connexion boutiques" icon={<Store size={15} />}>
           <Field
@@ -344,5 +502,16 @@ function Section({
       </h2>
       {children}
     </section>
+  );
+}
+
+function DiagRow({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+      <span className={ok ? 'text-green-500' : 'text-slate-300 dark:text-slate-600'}>
+        {ok ? '●' : '○'}
+      </span>
+      <span>{label}</span>
+    </div>
   );
 }

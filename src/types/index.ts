@@ -140,7 +140,10 @@ export type SettingKey =
   | 'geminiKey' // clé API Gemini
   | 'geminiModel' // identifiant du modèle Gemini
   | 'proxyUrl' // URL du proxy Cloudflare Worker (Pilier B)
-  | 'defaultMarkup'; // markup par défaut au push (ex. 2.5)
+  | 'defaultMarkup' // markup par défaut au push (ex. 2.5)
+  | 'autoRefreshEnabled' // rafraîchissement auto de la veille
+  | 'refreshIntervalHours' // intervalle en heures (6/12/24)
+  | 'nichesSeenAt'; // timestamp dernière visite des niches (badge nouveautés)
 
 export interface Setting<K extends SettingKey = SettingKey> {
   key: K;
@@ -155,6 +158,9 @@ export interface SettingValueMap {
   geminiModel: string;
   proxyUrl: string;
   defaultMarkup: number;
+  autoRefreshEnabled: boolean;
+  refreshIntervalHours: number;
+  nichesSeenAt: number;
 }
 export type SettingValue<K extends SettingKey> = SettingValueMap[K];
 

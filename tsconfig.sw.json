@@ -2,32 +2,28 @@
   "compilerOptions": {
     "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    // Pas de "DOM" ici : le SW tourne dans un ServiceWorkerGlobalScope.
+    "lib": ["ES2022", "WebWorker"],
     "module": "ESNext",
     "skipLibCheck": true,
 
-    /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
     "noEmit": true,
-    "jsx": "react-jsx",
+    "types": ["vite/client", "vite-plugin-pwa/client"],
 
-    /* Linting */
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true,
 
-    /* Paths */
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"]
     }
   },
-  "include": ["src"],
-  "exclude": ["src/sw.ts"]
+  "include": ["src/sw.ts", "src/types/sw.d.ts", "src/lib/refresh.ts", "src/lib/research.ts", "src/lib/gemini.ts", "src/lib/db.ts", "src/lib/format.ts", "src/types/index.ts"]
 }
