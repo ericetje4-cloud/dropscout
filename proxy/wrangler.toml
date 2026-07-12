@@ -1,0 +1,7 @@
+name = "dropscout-proxy"
+main = "worker.js"
+compatibility_date = "2024-10-01"
+
+# Optionnel : restreindre l'accès au proxy par une clé partagée.
+# Définissez-la via : wrangler secret put PROXY_KEY
+# puis renseignez X-Proxy-Key côté app dans les réglages (extension future).
