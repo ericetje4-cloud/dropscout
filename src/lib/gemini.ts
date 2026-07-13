@@ -256,7 +256,11 @@ export async function listModels(
     const resp = await fetch(url);
     if (!resp.ok) {
       const body = await resp.json().catch(() => null);
-      return { ok: false, message: body?.error?.message ?? `Erreur HTTP ${resp.status}` };
+      const googleMsg = body?.error?.message ?? '';
+      return {
+        ok: false,
+        message: formatListError(resp.status, googleMsg, trimmed),
+      };
     }
     const data = await resp.json();
     const all = (data?.models ?? []) as {
@@ -276,8 +280,27 @@ export async function listModels(
       }));
     return { ok: true, models };
   } catch {
-    return { ok: false, message: 'Réseau injoignable.' };
+    return { ok: false, message: 'Réseau injoignable (vérifie ta connexion).' };
   }
+}
+
+/**
+ * Formate un message d'erreur parlant pour l'échec de listModels, en incluant
+ * le code HTTP, le message Google et un diagnostic de la clé (longueur).
+ */
+function formatListError(status: number, googleMsg: string, key: string): string {
+  const parts: string[] = [];
+  // Code HTTP + message Google brut (pour ne rien masquer).
+  parts.push(`HTTP ${status}`);
+  if (googleMsg) parts.push(googleMsg);
+  // Diagnostic de la clé : une clé AI Studio valide fait 39 caractères.
+  const len = key.length;
+  if (!key.startsWith('AIza')) {
+    parts.push('La clé devrait commencer par « AIza ».');
+  } else if (len !== 39) {
+    parts.push(`Longueur ${len} (une clé valide en fait 39) — probable copier-coller tronqué.`);
+  }
+  return parts.join(' — ');
 }
 
 /**

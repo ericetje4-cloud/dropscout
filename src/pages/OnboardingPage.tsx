@@ -215,34 +215,54 @@ function KeyForm() {
   const [testing, setTesting] = useState(false);
 
   async function test() {
-    if (!key.trim()) {
-      toast("Collez d'abord votre clé.", 'warning');
+    // Nettoyage robuste : trim + retire espaces internes (copier-coller mobile).
+    const clean = key.trim().replace(/\s+/g, '');
+    if (!clean) {
+      toast('Collez d\'abord votre clé.', 'warning');
       return;
     }
+    setKey(clean); // reflète la clé nettoyée
     setTesting(true);
-    const result = await testApiKey(key.trim(), DEFAULT_MODEL);
+    const result = await testApiKey(clean, DEFAULT_MODEL);
     setTesting(false);
     if (result.ok) {
-      await setSetting('geminiKey', key.trim());
-      setApiKey(key.trim());
+      await setSetting('geminiKey', clean);
+      setApiKey(clean);
       toast('Clé valide ✓ — enregistrée', 'success');
     } else {
-      toast(`Clé invalide : ${result.message}`, 'error');
+      toast(`Échec : ${result.message}`, 'error');
     }
   }
 
+  // Diagnostic temps réel de la clé saisie.
+  const cleanKey = key.trim().replace(/\s+/g, '');
+  const keyHint = cleanKey.length === 0
+    ? null
+    : !cleanKey.startsWith('AIza')
+      ? { text: 'La clé devrait commencer par « AIza ».', cls: 'text-amber-600' }
+      : cleanKey.length !== 39
+        ? { text: `Longueur ${cleanKey.length}/39 — clé possiblement tronquée.`, cls: 'text-amber-600' }
+        : { text: 'Format correct ✓', cls: 'text-green-600' };
+
   return (
     <div className="space-y-3">
-      <Field label="Clé API Gemini" required>
+      <Field label="Clé API Gemini" required hint="Collez la clé entière (commence par AIza, 39 caractères).">
         <input
           type="password"
           value={key}
           onChange={(e) => setKey(e.target.value)}
+          onBlur={() => setKey(key.trim().replace(/\s+/g, ''))}
           placeholder="AIza..."
           className="input"
           autoComplete="off"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
         />
       </Field>
+      {keyHint && (
+        <p className={`text-xs ${keyHint.cls} dark:${keyHint.cls}`}>{keyHint.text}</p>
+      )}
       <button onClick={() => void test()} disabled={testing} className="btn-secondary w-full">
         {testing ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
         {testing ? 'Test en cours…' : 'Tester la clé'}
