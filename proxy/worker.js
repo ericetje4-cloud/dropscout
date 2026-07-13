@@ -36,14 +36,32 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/health') {
-      const ali = !!(env.ALI_APP_KEY && env.ALI_APP_SECRET);
-      return json({ ok: true, service: 'dropscout-proxy', aliexpress: ali });
+      // Carte de disponibilité de tous les fournisseurs.
+      const suppliers = {
+        aliexpress: !!(env.ALI_APP_KEY && env.ALI_APP_SECRET),
+        cj: !!env.CJ_TOKEN,
+        ebay: !!(env.EBAY_CLIENT_ID && env.EBAY_CLIENT_SECRET),
+      };
+      // Rétro-compat : on garde aussi le booléen aliexpress à la racine.
+      return json({ ok: true, service: 'dropscout-proxy', suppliers, aliexpress: suppliers.aliexpress });
     }
 
     try {
-      // --- Routes AliExpress (dispatch par path) ---
+      // --- Routes fournisseurs unifiées : /supplier/<id>/{search,img} ---
+      const supplierMatch = url.pathname.match(/^\/supplier\/([a-z]+)\/(search|img)$/);
+      if (supplierMatch) {
+        const [, id, action] = supplierMatch;
+        if (id === 'aliexpress') return handleAliexpress(request, url, env, action);
+        if (id === 'cj') return handleCj(request, url, env, action);
+        if (id === 'ebay') return handleEbay(request, url, env, action);
+        return json({ error: `Fournisseur inconnu : ${id}` }, 404);
+      }
+
+      // --- Alias rétro-compatible : /aliexpress/* → supplier/aliexpress/* ---
       if (url.pathname.startsWith('/aliexpress/')) {
-        return handleAliexpress(request, url, env);
+        const action = url.pathname.endsWith('/img') ? 'img' : 'search';
+        url.pathname = `/supplier/aliexpress/${action}`;
+        return handleAliexpress(request, url, env, action);
       }
 
       // --- Routes boutiques (dispatch par header platform) ---
@@ -61,22 +79,23 @@ export default {
 // AliExpress Affiliate API (IOP — signature MD5)
 // ===========================================================================
 
-async function handleAliexpress(request, url, env) {
+async function handleAliexpress(request, url, env, action) {
   const appKey = env.ALI_APP_KEY;
   const appSecret = env.ALI_APP_SECRET;
 
-  if (url.pathname === '/aliexpress/img') {
-    return proxyAliImage(url, env);
+  // Proxy d'image (allowlist CDN AliExpress).
+  if (action === 'img') {
+    return proxyImage(url, ['alicdn.com', 'aliexpress-media.com', 'aliexpress.com']);
   }
 
-  if (url.pathname === '/aliexpress/search') {
+  // Recherche produit (signature IOP MD5).
+  if (action === 'search') {
     if (!appKey || !appSecret) {
       return json({ error: 'AliExpress non configuré côté proxy (ALI_APP_KEY / ALI_APP_SECRET manquants).' }, 503);
     }
     const keywords = url.searchParams.get('keywords');
     if (!keywords) return json({ error: 'Paramètre keywords requis.' }, 400);
 
-    // Paramètres IOP (tri par clé pour la signature).
     const params = {
       app_key: appKey,
       method: 'aliexpress.affiliate.product.query',
@@ -84,7 +103,6 @@ async function handleAliexpress(request, url, env) {
       timestamp: Date.now().toString(),
       format: 'json',
       v: '2.0',
-      // Paramètres métier (sérialisés en JSON dans la requête IOP).
       keywords,
       target_currency: 'EUR',
       target_language: 'FR',
@@ -105,7 +123,6 @@ async function handleAliexpress(request, url, env) {
     });
     const data = await resp.json();
 
-    // La structure de réponse IOP est imbriquée. On normalise.
     const raw = data?.aliexpress_affiliate_product_query_response
       ?.resp_result?.result?.products?.product ?? [];
     const products = raw.map((p) => ({
@@ -120,30 +137,142 @@ async function handleAliexpress(request, url, env) {
     return json({ products });
   }
 
-  return json({ error: `Route AliExpress inconnue : ${url.pathname}` }, 404);
+  return json({ error: `Action AliExpress inconnue : ${action}` }, 404);
 }
 
-/**
- * Proxy d'image AliExpress : fetch serveur (Referer omis) pour contourner le
- * hotlink protection du CDN Alibaba, puis re-sert l'image avec CORS.
- */
-async function proxyAliImage(url, _env) {
+// ===========================================================================
+// CJ Dropshipping API (Bearer token)
+// ===========================================================================
+
+async function handleCj(request, url, env, action) {
+  const token = env.CJ_TOKEN;
+
+  if (action === 'img') {
+    return proxyImage(url, ['cjdropshipping.com', 'cj-static.com', 'cj-selections.com']);
+  }
+
+  if (action === 'search') {
+    if (!token) {
+      return json({ error: 'CJ Dropshipping non configuré (CJ_TOKEN manquant).' }, 503);
+    }
+    const keywords = url.searchParams.get('keywords');
+    if (!keywords) return json({ error: 'Paramètre keywords requis.' }, 400);
+
+    // CJ Product List V2 : POST JSON avec accessToken en header.
+    const resp = await fetch('https://developers.cjdropshipping.cn/api2.0/product/searchProductList', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'CJ-Access-Token': token,
+      },
+      body: JSON.stringify({
+        pageNum: 1,
+        pageSize: 10,
+        productName: keywords,
+      }),
+    });
+    const data = await resp.json();
+
+    const raw = data?.data?.list ?? data?.data ?? [];
+    const products = (Array.isArray(raw) ? raw : []).map((p) => ({
+      title: p.productNameEn ?? p.productName ?? p.title ?? '',
+      imageUrl: (p.productImage ?? p.img ?? p.images ?? [])[0] ?? p.productImage ?? '',
+      price: p.productPrice ?? p.sellPrice ?? p.price ?? '',
+      currency: 'EUR',
+      productUrl: p.productId
+        ? `https://cjdropshipping.com//product/${p.productId}`
+        : (p.productUrl ?? ''),
+      productId: String(p.productId ?? p.id ?? ''),
+    }));
+
+    return json({ products });
+  }
+
+  return json({ error: `Action CJ inconnue : ${action}` }, 404);
+}
+
+// ===========================================================================
+// eBay Browse API (OAuth2 Client Credentials — token caché côté proxy)
+// ===========================================================================
+
+// Cache du token applicatif eBay (valide ~2h, rafraîchi si expiré).
+let _ebayToken = '';
+let _ebayTokenExp = 0;
+
+async function getEbayToken(env) {
+  const now = Date.now();
+  if (_ebayToken && now < _ebayTokenExp - 60_000) return _ebayToken;
+
+  const creds = btoa(`${env.EBAY_CLIENT_ID}:${env.EBAY_CLIENT_SECRET}`);
+  const resp = await fetch('https://api.ebay.com/identity/v1/oauth2/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: `Basic ${creds}`,
+    },
+    body: 'grant_type=client_credentials&scope=https%3A%2F%2Fapi.ebay.com%2Foauth%2Fapi_scope',
+  });
+  const data = await resp.json();
+  if (!data.access_token) throw new Error('Impossible d\'obtenir le token eBay.');
+  _ebayToken = data.access_token;
+  _ebayTokenExp = now + (data.expires_in ?? 7200) * 1000;
+  return _ebayToken;
+}
+
+async function handleEbay(request, url, env, action) {
+  if (action === 'img') {
+    return proxyImage(url, ['ebayimg.com', 'ebaystatic.com', 'ebay.com']);
+  }
+
+  if (action === 'search') {
+    if (!env.EBAY_CLIENT_ID || !env.EBAY_CLIENT_SECRET) {
+      return json({ error: 'eBay non configuré (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET manquants).' }, 503);
+    }
+    const keywords = url.searchParams.get('keywords');
+    if (!keywords) return json({ error: 'Paramètre keywords requis.' }, 400);
+
+    const token = await getEbayToken(env);
+    const resp = await fetch(
+      `https://api.ebay.com/buy/browse/v1/item_summary/search?q=${encodeURIComponent(keywords)}&limit=10`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    const data = await resp.json();
+
+    const raw = data?.itemSummaries ?? [];
+    const products = raw.map((p) => ({
+      title: p.title ?? '',
+      imageUrl: p.image?.imageUrl ?? '',
+      price: p.price?.value ?? '',
+      currency: p.price?.currency ?? 'EUR',
+      productUrl: p.itemWebUrl ?? '',
+      productId: p.itemId ?? '',
+    }));
+
+    return json({ products });
+  }
+
+  return json({ error: `Action eBay inconnue : ${action}` }, 404);
+}
+
+// ===========================================================================
+// Proxy d'image générique (fetch serveur, Referer omis, allowlist par fournisseur)
+// ===========================================================================
+
+async function proxyImage(url, allowedDomains) {
   const target = url.searchParams.get('url');
   if (!target) return json({ error: 'Paramètre url requis.' }, 400);
-  // Sécurité minimale : n'autoriser que les domaines CDN connus d'AliExpress.
-  const allowed = ['alicdn.com', 'aliexpress-media.com', 'aliexpress.com'];
   let host = '';
   try {
     host = new URL(target).hostname;
   } catch {
     return json({ error: 'URL invalide.' }, 400);
   }
-  if (!allowed.some((d) => host.includes(d))) {
+  if (!allowedDomains.some((d) => host.includes(d))) {
     return json({ error: 'Domaine non autorisé.' }, 400);
   }
 
   const resp = await fetch(target, {
-    headers: { Referer: '' }, // omis → contourne le referer ban
+    headers: { Referer: '' },
     cf: { cacheTtl: 86400, cacheEverything: true },
   });
   if (!resp.ok) return json({ error: `Image injoignable (HTTP ${resp.status})` }, resp.status);

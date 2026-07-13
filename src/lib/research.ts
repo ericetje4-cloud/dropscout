@@ -12,10 +12,10 @@
 // ===========================================================================
 
 import { generateContent, hasApiKey, type GroundingMetadata } from '@/lib/gemini';
-import {
-  searchAliExpressProducts,
-  bestMatch,
-} from '@/lib/aliexpress-api';
+import { getSetting } from '@/lib/db';
+import { findBestOffers } from '@/lib/suppliers/aggregate';
+import type { SupplierOffer } from '@/lib/suppliers/types';
+import type { SupplierId } from '@/types';
 import type { ProductScore } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -25,18 +25,24 @@ import type { ProductScore } from '@/types';
 /** Une idée de produit issue de la veille IA. */
 export interface NicheProduct {
   title: string;
-  /** Mots-clés pour la recherche AliExpress (en anglais de préférence). */
+  /** Mots-clés de recherche (en anglais de préférence, pour les fournisseurs). */
   keywords: string;
   targetAudience: string;
   marketingAngle: string;
   /** Prix de vente estimé par l'IA (texte libre). */
   estPrice?: string;
-  // --- Champs remplis par enrichNicheReport (AliExpress) ---
-  /** Vraie image AliExpress (si enrichi). */
+  // --- Champs remplis par enrichNicheReport (multi-fournisseurs) ---
+  /**
+   * Offres trouvées chez les fournisseurs activés, triées par prix croissant.
+   * La première est la meilleure offre (la moins chère).
+   */
+  offers?: SupplierOffer[];
+  /**
+   * @deprecated ancien format (AliExpress seul). Conservé pour la compat
+   * descendante des rapports stockés avant la migration multi-fournisseurs.
+   */
   image?: string;
-  /** Vrai prix AliExpress (si enrichi). */
   aliPrice?: string;
-  /** Vrai lien d'achat AliExpress (si enrichi). */
   aliUrl?: string;
 }
 
@@ -52,6 +58,13 @@ export interface NicheReport {
   products: NicheProduct[];
   /** Sources web (URLs) citées par le grounding. */
   sources: string[];
+}
+
+/** Récupère les fournisseurs activés pour l'enrichissement (défaut: tous). */
+async function getEnabledSuppliersForEnrichment(): Promise<SupplierId[]> {
+  const enabled = await getSetting('enabledSuppliers');
+  if (Array.isArray(enabled) && enabled.length > 0) return enabled;
+  return ['aliexpress', 'cj', 'ebay'];
 }
 
 /**
@@ -82,7 +95,7 @@ Réponds UNIQUEMENT avec un objet JSON valide (aucun texte hors JSON) selon ce s
   "products": [
     {
       "title": "nom du produit en français",
-      "keywords": "mots-clés de recherche en ANGLAIS (pour AliExpress), ex: 'sunset led lamp'",
+      "keywords": "mots-clés de recherche en ANGLAIS (pour AliExpress, CJ, eBay), ex: 'sunset led lamp'",
       "targetAudience": "public cible",
       "marketingAngle": "angle marketing / accroche",
       "estPrice": "prix de vente estimé, ex: '29,90 €'"
@@ -116,31 +129,32 @@ Réponds UNIQUEMENT avec un objet JSON valide (aucun texte hors JSON) selon ce s
  * @returns le rapport enrichi (même référence)
  */
 export async function enrichNicheReport(report: NicheReport): Promise<NicheReport> {
+  const supplierIds = await getEnabledSuppliersForEnrichment();
+  if (supplierIds.length === 0) return report;
+
   const results = await Promise.allSettled(
-    report.products.map((p) => withTimeout(enrichProduct(p), 8000)),
+    report.products.map((p) => withTimeout(enrichProduct(p, supplierIds), 12000)),
   );
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') {
       report.products[i] = r.value;
     }
-    // En cas d'échec/timeout, le produit garde sa forme IA (sans image).
+    // En cas d'échec/timeout, le produit garde sa forme IA (sans offers).
   });
   return report;
 }
 
-/** Enrichit un produit : recherche AliExpress + appariement. */
-async function enrichProduct(p: NicheProduct): Promise<NicheProduct> {
-  const results = await searchAliExpressProducts(p.keywords);
-  const match = bestMatch(p.title, results);
-  if (match) {
-    return {
-      ...p,
-      image: match.imageUrl,
-      aliPrice: match.price ? `${match.price} ${match.currency}` : undefined,
-      aliUrl: match.productUrl || undefined,
-    };
-  }
-  return p;
+/**
+ * Enrichit un produit : interroge tous les fournisseurs activés en parallèle,
+ * garde la meilleure offre de chacun, trie par prix croissant.
+ */
+async function enrichProduct(
+  p: NicheProduct,
+  supplierIds: SupplierId[],
+): Promise<NicheProduct> {
+  const offers = await findBestOffers(p.title, p.keywords, supplierIds);
+  if (offers.length === 0) return p;
+  return { ...p, offers };
 }
 
 /** Timeout sur une promesse (reject après ms). */
@@ -208,13 +222,16 @@ function extractSources(meta?: GroundingMetadata): string[] {
   return meta.webSearchQueries ?? [];
 }
 
-/** Tente de parser un rapport sérialisé (lastReport). Rétro-compatible texte. */
+/** Tente de parser un rapport sérialisé (lastReport). Rétro-compatible. */
 export function parseStoredReport(stored: string | undefined): NicheReport | null {
   if (!stored) return null;
   try {
     const obj = JSON.parse(stored) as NicheReport;
-    // Heuristique : un vrai rapport a un champ summary ou products.
     if (typeof obj.summary === 'string' || Array.isArray(obj.products)) {
+      // Migration ancien format : aliPrice/aliUrl → offers[].
+      if (Array.isArray(obj.products)) {
+        obj.products = obj.products.map(migrateLegacyProduct);
+      }
       return obj;
     }
   } catch {
@@ -222,6 +239,32 @@ export function parseStoredReport(stored: string | undefined): NicheReport | nul
   }
   // Ancien format (markdown brut) → rétro-compat.
   return { summary: stored, trends: [], seasons: '', products: [], sources: [] };
+}
+
+/**
+ * Migre un produit de l'ancien format (AliExpress-only, champs aliPrice/aliUrl)
+ * vers le nouveau format multi-offres (offers[]). Sans effet si déjà migré.
+ */
+function migrateLegacyProduct(p: NicheProduct): NicheProduct {
+  if (p.offers && p.offers.length > 0) return p;
+  // Ancien format : on reconstruit une offre AliExpress depuis les champs dépréciés.
+  if (p.aliPrice || p.aliUrl || p.image) {
+    const priceStr = p.aliPrice ?? '';
+    return {
+      ...p,
+      offers: [
+        {
+          supplier: 'aliexpress',
+          image: p.image ?? '',
+          price: priceStr,
+          currency: 'EUR',
+          productUrl: p.aliUrl ?? '',
+          priceValue: Number.NaN,
+        },
+      ],
+    };
+  }
+  return p;
 }
 
 // ---------------------------------------------------------------------------

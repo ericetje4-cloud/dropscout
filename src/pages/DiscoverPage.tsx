@@ -21,12 +21,12 @@ import {
   type NicheProduct,
 } from '@/lib/research';
 import { refreshNiche } from '@/lib/refresh';
-import { isAliExpressAvailable } from '@/lib/aliexpress-api';
+import { getConfiguredSuppliers } from '@/lib/suppliers/registry';
 import { scoreProduct } from '@/lib/scoring';
 import { computeMargin } from '@/lib/scoring';
 import { formatMoney, formatRelative, getDisplayCurrency, toISODate } from '@/lib/format';
 import { hasApiKey } from '@/lib/gemini';
-import type { Niche, ProductScore } from '@/types';
+import type { Niche, ProductScore, SupplierId } from '@/types';
 
 type Tab = 'analyze' | 'niche' | 'watched';
 
@@ -356,11 +356,11 @@ function NichePanel() {
   const [phase, setPhase] = useState<'idle' | 'researching' | 'enriching'>('idle');
   const [watching, setWatching] = useState(false);
   const [result, setResult] = useState<NicheReport | null>(null);
-  const [aliAvailable, setAliAvailable] = useState<boolean | null>(null);
+  const [availableSuppliers, setAvailableSuppliers] = useState<SupplierId[]>([]);
 
-  // Détecte la dispo AliExpress au montage (cache le bouton enrichir si KO).
+  // Détecte les fournisseurs configurés au montage.
   useEffect(() => {
-    void isAliExpressAvailable().then(setAliAvailable);
+    void getConfiguredSuppliers().then(setAvailableSuppliers);
   }, []);
 
   const alreadyWatched = niches.some(
@@ -381,8 +381,8 @@ function NichePanel() {
     try {
       const report = await researchNiche(niche.trim(), region || 'FR');
 
-      // Enrichissement AliExpress (photos/prix réels) si disponible.
-      if (aliAvailable && report.products.length > 0) {
+      // Enrichissement multi-fournisseurs (photos/prix réels) si ≥1 dispo.
+      if (availableSuppliers.length > 0 && report.products.length > 0) {
         setPhase('enriching');
         try {
           await enrichNicheReport(report);
@@ -464,14 +464,15 @@ function NichePanel() {
         {phase === 'researching'
           ? 'Veille en cours…'
           : phase === 'enriching'
-            ? 'Récupération des images produits…'
+            ? `Recherche chez ${availableSuppliers.length} fournisseur(s)…`
             : 'Lancer la veille'}
       </button>
 
-      {aliAvailable === false && hasApiKey() && (
+      {availableSuppliers.length === 0 && hasApiKey() && (
         <p className="rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-          ℹ️ AliExpress non configuré : la veille affichera les produits sans photos réelles.
-          Voir <code>proxy/README.md</code> pour activer les images.
+          ℹ️ Aucun fournisseur configuré : la veille affichera les produits sans
+          photos ni prix réels. Voir <code>proxy/README.md</code> pour activer
+          AliExpress / CJ / eBay.
         </p>
       )}
 

@@ -84,11 +84,49 @@ wrangler deploy
 Vérifiez qu'AliExpress est actif :
 ```bash
 curl https://dropscout-proxy.<votre-sous-domaine>.workers.dev/health
-# → { "ok": true, "service": "dropscout-proxy", "aliexpress": true }
+# → { "ok": true, "service": "dropscout-proxy", "suppliers": { "aliexpress": true, "cj": false, "ebay": false } }
 ```
 
-Côté app, rien à configurer : si `aliexpress: true` dans `/health`, les images
-produits apparaissent automatiquement dans la veille.
+Côté app, rien à configurer : les fournisseurs marqués `true` dans `/health`
+apparaissent automatiquement comme sources de la veille.
+
+## CJ Dropshipping (fournisseur dropshipping dédié)
+
+Marchéplace dédiée au dropshipping, mêmes produits qu'AliExpress mais souvent
+stock Europe et livraison plus rapide.
+
+### Obtenir le token
+1. Créez un compte sur [cjdropshipping.com](https://cjdropshipping.com) (gratuit).
+2. **My CJ → Authorization → API** → copiez l'**Access Token** (API key).
+
+### Configurer le Worker
+```bash
+wrangler secret put CJ_TOKEN     # collez votre token
+wrangler deploy
+```
+
+## eBay (signal de prix marché)
+
+eBay n'est pas une source d'approvisionnement : c'est un **signal de demande
+et de prix** pour comparer. Pratique pour valider qu'un produit se vend.
+
+### Obtenir les credentials
+1. Créez un compte développeur sur [developer.ebay.com](https://developer.ebay.com) (gratuit).
+2. Créez un **Key Set** (Application) → récupérez le **Client ID** et **Client Secret**.
+
+### Configurer le Worker
+```bash
+wrangler secret put EBAY_CLIENT_ID
+wrangler secret put EBAY_CLIENT_SECRET
+wrangler deploy
+```
+
+## Activation / désactivation côté app
+
+Tous les fournisseurs configurés apparaissent dans **Réglages → Fournisseurs**.
+Vous pouvez les activer/désactiver individuellement pour la veille (toggle).
+La veille interroge en parallèle tous les fournisseurs activés et affiche,
+pour chaque produit, la meilleure offre de chacun (tri par prix croissant).
 
 ## Sécurité
 

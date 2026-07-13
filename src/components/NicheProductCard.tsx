@@ -1,12 +1,13 @@
 // ===========================================================================
-// NicheProductCard : une idée de produit de la veille, avec VRAIE photo
-// AliExpress + prix + lien d'achat (si enrichi), et actions.
+// NicheProductCard : une idée de produit de la veille, avec comparaison
+// multi-fournisseurs (meilleure offre mise en avant + sources alternatives).
 // ===========================================================================
 
 import { useState } from 'react';
-import { ExternalLink, Sparkles, Save, Loader2 } from 'lucide-react';
+import { ExternalLink, Sparkles, Save, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
 import type { NicheProduct } from '@/lib/research';
-import { aliexpressImageFallback } from '@/lib/aliexpress-api';
+import { SUPPLIERS } from '@/lib/suppliers/registry';
+import type { SupplierOffer } from '@/lib/suppliers/types';
 import { addProduct } from '@/hooks/useStore';
 import { useToast } from '@/components/ui';
 
@@ -18,21 +19,28 @@ export function NicheProductCard({
   product: NicheProduct;
   /** Niche de rattachement (pour la watchlist). */
   niche?: string;
-  /** Callback "Analyser ce produit" (pousse vers le flux d'analyse IA). */
+  /** Callback "Analyser ce produit". */
   onAnalyze?: (product: NicheProduct) => void;
 }) {
   const { toast } = useToast();
-  const [imgError, setImgError] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showAllOffers, setShowAllOffers] = useState(false);
+
+  const offers = product.offers ?? [];
+  const bestOffer = offers[0]; // déjà trié par prix croissant
+  const otherOffers = offers.slice(1);
+
+  // Image de la meilleure offre (ou image legacy si ancien format).
+  const primaryImage = bestOffer?.image ?? product.image;
 
   async function save() {
     setSaving(true);
     try {
       await addProduct({
         title: product.title,
-        url: product.aliUrl,
-        image: product.image,
+        url: bestOffer?.productUrl ?? product.aliUrl,
+        image: primaryImage,
         niche,
         status: 'idea',
         notes: [product.targetAudience, product.marketingAngle, product.estPrice]
@@ -48,58 +56,42 @@ export function NicheProductCard({
     }
   }
 
+  function analyze() {
+    onAnalyze?.(product);
+  }
+
   return (
     <div className="card overflow-hidden">
       <div className="flex gap-3 p-3">
-        {/* Image : essaie directe (no-referrer), fallback proxy si hotlink */}
-        {product.image && !imgError ? (
-          <img
-            src={product.image}
-            alt={product.title}
-            referrerPolicy="no-referrer"
-            onError={() => setImgError(true)}
-            className="h-20 w-20 shrink-0 rounded-lg bg-slate-100 object-cover ring-1 ring-slate-200 dark:ring-slate-700"
-          />
-        ) : product.image && imgError ? (
-          <img
-            src={aliexpressImageFallback(product.image)}
-            alt={product.title}
-            className="h-20 w-20 shrink-0 rounded-lg bg-slate-100 object-cover ring-1 ring-slate-200 dark:ring-slate-700"
-          />
-        ) : (
-          <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-3xl dark:bg-slate-800">
-            📦
-          </div>
-        )}
+        <OfferImage offer={bestOffer} fallbackUrl={product.image} />
 
         <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <p className="font-medium leading-tight">{product.title}</p>
-          </div>
+          <p className="font-medium leading-tight">{product.title}</p>
 
-          {/* Prix réel AliExpress ou estimation IA */}
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-            {product.aliPrice && (
-              <span className="rounded-md bg-green-100 px-2 py-0.5 font-semibold text-green-700 dark:bg-green-950/40 dark:text-green-300">
-                AliExpress · {product.aliPrice}
-              </span>
-            )}
-            {!product.aliPrice && product.estPrice && (
-              <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                Est. {product.estPrice}
-              </span>
-            )}
-            {product.aliUrl && (
-              <a
-                href={product.aliUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400"
-              >
-                Voir <ExternalLink size={11} />
-              </a>
-            )}
-          </div>
+          {/* Offres par fournisseur */}
+          {offers.length > 0 ? (
+            <div className="mt-1.5 space-y-1">
+              <OfferRow offer={bestOffer} highlight />
+              {showAllOffers &&
+                otherOffers.map((o, i) => <OfferRow key={i} offer={o} />)}
+              {otherOffers.length > 0 && (
+                <button
+                  onClick={() => setShowAllOffers((s) => !s)}
+                  className="flex items-center gap-1 text-[11px] font-medium text-brand-600 hover:underline dark:text-brand-400"
+                >
+                  {showAllOffers ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                  {showAllOffers
+                    ? 'Réduire'
+                    : `${otherOffers.length} autre(s) source(s)`}
+                </button>
+              )}
+            </div>
+          ) : product.aliPrice ? (
+            // Rétro-compat ancien format (déjà migré en offers, mais au cas où)
+            <p className="mt-1 text-xs text-slate-500">AliExpress · {product.aliPrice}</p>
+          ) : product.estPrice ? (
+            <p className="mt-1 text-xs text-slate-500">Est. {product.estPrice}</p>
+          ) : null}
 
           {/* Détails IA */}
           {(product.targetAudience || product.marketingAngle) && (
@@ -114,10 +106,7 @@ export function NicheProductCard({
       {/* Actions */}
       <div className="flex gap-2 border-t border-slate-100 px-3 py-2 dark:border-slate-800">
         {onAnalyze && (
-          <button
-            onClick={() => onAnalyze(product)}
-            className="btn-ghost flex-1 py-1.5 text-xs"
-          >
+          <button onClick={analyze} className="btn-ghost flex-1 py-1.5 text-xs">
             <Sparkles size={13} /> Analyser
           </button>
         )}
@@ -139,4 +128,93 @@ export function NicheProductCard({
       </div>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Image d'une offre (essaie directe, fallback proxy si hotlink)
+// ---------------------------------------------------------------------------
+
+function OfferImage({
+  offer,
+  fallbackUrl,
+}: {
+  offer?: SupplierOffer;
+  fallbackUrl?: string;
+}) {
+  const [imgError, setImgError] = useState(false);
+  const url = offer?.image ?? fallbackUrl;
+  const supplierId = offer?.supplier ?? 'aliexpress';
+
+  if (!url) {
+    return (
+      <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-3xl dark:bg-slate-800">
+        📦
+      </div>
+    );
+  }
+
+  // Essai direct (no-referrer), fallback proxy propre au fournisseur si hotlink.
+  const proxyFallback = SUPPLIERS[supplierId]?.imageProxyUrl(url) ?? url;
+
+  if (!imgError) {
+    return (
+      <img
+        src={url}
+        alt=""
+        referrerPolicy="no-referrer"
+        onError={() => setImgError(true)}
+        className="h-20 w-20 shrink-0 rounded-lg bg-slate-100 object-cover ring-1 ring-slate-200 dark:ring-slate-700"
+      />
+    );
+  }
+  return (
+    <img
+      src={proxyFallback}
+      alt=""
+      className="h-20 w-20 shrink-0 rounded-lg bg-slate-100 object-cover ring-1 ring-slate-200 dark:ring-slate-700"
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Une ligne offre (badge fournisseur + prix + lien)
+// ---------------------------------------------------------------------------
+
+function OfferRow({ offer, highlight = false }: { offer: SupplierOffer; highlight?: boolean }) {
+  const meta = SUPPLIERS[offer.supplier]?.meta;
+  const priceLabel = formatOfferPrice(offer);
+
+  return (
+    <div
+      className={`flex items-center gap-2 text-xs ${
+        highlight ? 'font-semibold' : 'text-slate-500 dark:text-slate-400'
+      }`}
+    >
+      <span title={meta?.label}>{meta?.badge ?? '•'}</span>
+      <span className={highlight ? meta?.color ?? '' : ''}>{meta?.label}</span>
+      {priceLabel && <span>· {priceLabel}</span>}
+      {offer.productUrl && (
+        <a
+          href={offer.productUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="ml-auto inline-flex items-center gap-0.5 text-brand-600 hover:underline dark:text-brand-400"
+        >
+          <ExternalLink size={10} />
+        </a>
+      )}
+    </div>
+  );
+}
+
+/** Formate le prix d'une offre de façon lisible. */
+function formatOfferPrice(offer: SupplierOffer): string {
+  if (!offer.price) return '';
+  // Si le prix est déjà formaté avec devise, on garde tel quel.
+  if (/\d/.test(offer.price)) {
+    return Number.isFinite(offer.priceValue)
+      ? `${offer.price} ${offer.currency}`
+      : offer.price;
+  }
+  return offer.price;
 }

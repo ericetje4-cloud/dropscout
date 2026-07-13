@@ -44,7 +44,12 @@ import {
   explainStatus,
   type AutoRefreshStatus,
 } from '@/lib/background-sync';
-import { isAliExpressAvailable } from '@/lib/aliexpress-api';
+import {
+  getSuppliersHealth,
+  SUPPLIER_META,
+  SUPPLIER_ORDER,
+} from '@/lib/suppliers/registry';
+import type { SupplierId } from '@/types';
 import { refreshDueNiches, DEFAULT_INTERVAL_HOURS } from '@/lib/refresh';
 import type { BackupPayload } from '@/types';
 
@@ -411,7 +416,7 @@ export function SettingsPage() {
             Enregistrer le proxy
           </button>
           <p className="text-xs text-slate-400">{shops.length} boutique(s) configurée(s).</p>
-          <AliExpressStatus proxyUrl={proxyUrl} />
+          <SuppliersStatus proxyUrl={proxyUrl} />
         </Section>
 
         {/* Données */}
@@ -518,42 +523,86 @@ function DiagRow({ ok, label }: { ok: boolean; label: string }) {
   );
 }
 
-/** Statut AliExpress : indique si les images produits réelles seront disponibles. */
-function AliExpressStatus({ proxyUrl }: { proxyUrl: string }) {
-  const [status, setStatus] = useState<boolean | null>(null);
+/**
+ * Statut multi-fournisseurs : pour chacun, indique s'il est configuré côté
+ * proxy et permet de l'activer/désactiver pour la veille.
+ */
+function SuppliersStatus({ proxyUrl }: { proxyUrl: string }) {
+  const [health, setHealth] = useState<Partial<Record<SupplierId, boolean>>>({});
+  const [enabled, setEnabled] = useState<SupplierId[]>(SUPPLIER_ORDER);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    if (!proxyUrl.trim()) {
-      setStatus(null);
-      return;
-    }
-    let cancelled = false;
-    void isAliExpressAvailable().then((ok) => {
-      if (!cancelled) setStatus(ok);
-    });
-    return () => {
-      cancelled = true;
-    };
+    void (async () => {
+      const h = await getSuppliersHealth();
+      setHealth(h);
+      const saved = await getSetting('enabledSuppliers');
+      if (Array.isArray(saved) && saved.length > 0) setEnabled(saved);
+      setLoaded(true);
+    })();
   }, [proxyUrl]);
 
-  if (status === null) {
+  async function toggle(id: SupplierId, on: boolean) {
+    const next = on ? [...new Set([...enabled, id])] : enabled.filter((x) => x !== id);
+    setEnabled(next);
+    await setSetting('enabledSuppliers', next);
+  }
+
+  if (!proxyUrl.trim()) {
     return (
       <p className="text-xs text-slate-400">
-        AliExpress : {proxyUrl.trim() ? 'vérification…' : 'non configuré (images produits indisponibles).'}
+        Fournisseurs : proxy non configuré. Aucune image/prix réel disponible.
       </p>
     );
   }
-  if (status) {
-    return (
-      <p className="text-xs font-medium text-green-600 dark:text-green-400">
-        ● AliExpress actif — les photos produits réelles apparaîtront dans la veille.
-      </p>
-    );
+
+  if (!loaded) {
+    return <p className="text-xs text-slate-400">Fournisseurs : vérification…</p>;
   }
+
   return (
-    <p className="text-xs text-amber-600 dark:text-amber-400">
-      ◐ Proxy OK mais AliExpress non configuré (ALI_APP_KEY/ALI_APP_SECRET sur le Worker).
-      La veille marche sans images. Voir <code>proxy/README.md</code>.
-    </p>
+    <div className="space-y-1.5">
+      <p className="text-xs font-semibold text-slate-400">Fournisseurs de veille</p>
+      {SUPPLIER_ORDER.map((id) => {
+        const meta = SUPPLIER_META[id];
+        const available = health[id] === true;
+        const isEnabled = enabled.includes(id);
+        return (
+          <div
+            key={id}
+            className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/60"
+          >
+            <div className="flex items-center gap-2 text-sm">
+              <span>{meta.badge}</span>
+              <span className="font-medium">{meta.label}</span>
+              {available ? (
+                <span className="text-[10px] text-green-600 dark:text-green-400">● configuré</span>
+              ) : (
+                <span className="text-[10px] text-amber-600 dark:text-amber-400">
+                  ◐ credentials manquants
+                </span>
+              )}
+            </div>
+            <button
+              onClick={() => void toggle(id, !isEnabled)}
+              disabled={!available}
+              className={`relative h-5 w-9 rounded-full transition-colors disabled:opacity-40 ${
+                isEnabled && available ? 'bg-brand-600' : 'bg-slate-300 dark:bg-slate-600'
+              }`}
+              aria-label={`${isEnabled ? 'Désactiver' : 'Activer'} ${meta.label}`}
+            >
+              <span
+                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                  isEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+        );
+      })}
+      <p className="text-xs text-slate-400">
+        Active/désactive les sources pour la veille. Voir <code>proxy/README.md</code> pour configurer les credentials manquants.
+      </p>
+    </div>
   );
 }

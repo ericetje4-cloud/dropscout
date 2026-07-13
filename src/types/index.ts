@@ -7,6 +7,13 @@
 export type ID = string;
 
 // ---------------------------------------------------------------------------
+// FOURNISSEURS (sources d'appro / comparaison de prix)
+// ---------------------------------------------------------------------------
+
+/** Fournisseurs de produits supportés par la veille multi-sources. */
+export type SupplierId = 'aliexpress' | 'cj' | 'ebay';
+
+// ---------------------------------------------------------------------------
 // PRODUITS (watchlist)
 // ---------------------------------------------------------------------------
 
@@ -143,7 +150,8 @@ export type SettingKey =
   | 'defaultMarkup' // markup par défaut au push (ex. 2.5)
   | 'autoRefreshEnabled' // rafraîchissement auto de la veille
   | 'refreshIntervalHours' // intervalle en heures (6/12/24)
-  | 'nichesSeenAt'; // timestamp dernière visite des niches (badge nouveautés)
+  | 'nichesSeenAt' // timestamp dernière visite des niches (badge nouveautés)
+  | 'enabledSuppliers'; // SupplierId[] activés pour la veille (défaut: tous)
 
 export interface Setting<K extends SettingKey = SettingKey> {
   key: K;
@@ -161,6 +169,7 @@ export interface SettingValueMap {
   autoRefreshEnabled: boolean;
   refreshIntervalHours: number;
   nichesSeenAt: number;
+  enabledSuppliers: SupplierId[];
 }
 export type SettingValue<K extends SettingKey> = SettingValueMap[K];
 
