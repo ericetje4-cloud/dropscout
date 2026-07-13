@@ -81,9 +81,29 @@ npm run preview    # prévisualise le build
 Le dossier `dist/` est statique : hébergeable sur GitHub Pages, Netlify,
 Cloudflare Pages, Vercel, etc.
 
-### GitHub Pages
+### GitHub Pages (automatique via Actions)
+
+Le workflow `.github/workflows/deploy.yml` build et publie automatiquement sur
+GitHub Pages à chaque push sur `main`. L'app est servie sous :
+```
+https://ericetje4-cloud.github.io/dropscout/
+```
+
+**Première activation** (une seule fois, après le premier push) :
+1. Sur GitHub → **Settings du repo → Pages**
+2. **Source : GitHub Actions** (pas *Deploy from a branch*)
+3. Le workflow se déclenche au prochain push ; la page est prête en ~1 min.
+
+Si tu déploies sous un **autre nom de repo**, adapte le `VITE_BASE_PATH` dans le
+workflow (`.github/workflows/deploy.yml`) :
+```yaml
+env:
+  VITE_BASE_PATH: /<ton-nom-de-repo>/
+```
+
+Build local avec le bon base path (pour tester comme en prod) :
 ```bash
-VITE_BASE_PATH=/nom-du-repo npm run build
+VITE_BASE_PATH=/dropscout/ npm run build && npm run preview
 ```
 
 ---
