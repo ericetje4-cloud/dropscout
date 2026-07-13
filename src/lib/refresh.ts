@@ -14,7 +14,7 @@
 
 import { getAllNiches, getSetting, putNiche } from '@/lib/db';
 import { setApiKey } from '@/lib/gemini';
-import { researchNiche } from '@/lib/research';
+import { researchNiche, type NicheReport } from '@/lib/research';
 import { putAnalysis } from '@/lib/db';
 import { toISODate } from '@/lib/format';
 import type { Niche } from '@/types';
@@ -81,13 +81,17 @@ export async function getDueNiches(): Promise<Niche[]> {
  */
 export async function refreshNiche(
   niche: Niche,
-): Promise<{ niche: Niche; report: string; sources: string[] }> {
-  const { report, sources } = await researchNiche(niche.label, niche.region || 'FR');
+): Promise<{ niche: Niche; report: NicheReport }> {
+  const report = await researchNiche(niche.label, niche.region || 'FR');
+
+  // Sérialise le rapport structuré pour le stockage (rétro-compatible : si
+  // l'UI lit un ancien format texte, parseStoredReport le gère).
+  const serialized = JSON.stringify(report);
 
   const updated: Niche = {
     ...niche,
-    lastReport: report,
-    lastSources: sources,
+    lastReport: serialized,
+    lastSources: report.sources,
     lastCheckedAt: toISODate(new Date()),
     updatedAt: Date.now(),
   };
@@ -97,11 +101,11 @@ export async function refreshNiche(
   await putAnalysis({
     id: crypto.randomUUID(),
     input: `Veille niche : ${niche.label} (${niche.region || 'FR'})`,
-    report,
+    report: report.summary,
     createdAt: Date.now(),
   });
 
-  return { niche: updated, report, sources };
+  return { niche: updated, report };
 }
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,7 @@ import {
   explainStatus,
   type AutoRefreshStatus,
 } from '@/lib/background-sync';
+import { isAliExpressAvailable } from '@/lib/aliexpress-api';
 import { refreshDueNiches, DEFAULT_INTERVAL_HOURS } from '@/lib/refresh';
 import type { BackupPayload } from '@/types';
 
@@ -396,7 +397,7 @@ export function SettingsPage() {
         <Section title="Connexion boutiques" icon={<Store size={15} />}>
           <Field
             label="URL du proxy (Cloudflare Worker)"
-            hint="Requis pour connecter Shopify / WooCommerce. Voir proxy/README.md pour le déploiement."
+            hint="Requis pour Shopify / WooCommerce ET pour les images produits AliExpress. Voir proxy/README.md."
           >
             <input
               type="url"
@@ -410,6 +411,7 @@ export function SettingsPage() {
             Enregistrer le proxy
           </button>
           <p className="text-xs text-slate-400">{shops.length} boutique(s) configurée(s).</p>
+          <AliExpressStatus proxyUrl={proxyUrl} />
         </Section>
 
         {/* Données */}
@@ -513,5 +515,45 @@ function DiagRow({ ok, label }: { ok: boolean; label: string }) {
       </span>
       <span>{label}</span>
     </div>
+  );
+}
+
+/** Statut AliExpress : indique si les images produits réelles seront disponibles. */
+function AliExpressStatus({ proxyUrl }: { proxyUrl: string }) {
+  const [status, setStatus] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!proxyUrl.trim()) {
+      setStatus(null);
+      return;
+    }
+    let cancelled = false;
+    void isAliExpressAvailable().then((ok) => {
+      if (!cancelled) setStatus(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [proxyUrl]);
+
+  if (status === null) {
+    return (
+      <p className="text-xs text-slate-400">
+        AliExpress : {proxyUrl.trim() ? 'vérification…' : 'non configuré (images produits indisponibles).'}
+      </p>
+    );
+  }
+  if (status) {
+    return (
+      <p className="text-xs font-medium text-green-600 dark:text-green-400">
+        ● AliExpress actif — les photos produits réelles apparaîtront dans la veille.
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-amber-600 dark:text-amber-400">
+      ◐ Proxy OK mais AliExpress non configuré (ALI_APP_KEY/ALI_APP_SECRET sur le Worker).
+      La veille marche sans images. Voir <code>proxy/README.md</code>.
+    </p>
   );
 }

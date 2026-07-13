@@ -90,11 +90,20 @@ const researchNicheTool: ToolDef = {
     if (!niche) return 'Erreur : niche manquante.';
     const region = String(args.region ?? 'FR').trim().toUpperCase();
     try {
-      const { report, sources } = await researchNiche(niche, region);
-      const src = sources.length > 0
-        ? `\n\nSources :\n${sources.slice(0, 6).map((s) => `- ${s}`).join('\n')}`
-        : '';
-      return `Veille « ${niche} » (${region}) :\n\n${report}${src}`;
+      const { summary, trends, seasons, products, sources } = await researchNiche(niche, region);
+      const lines: string[] = [`Veille « ${niche} » (${region}) :`, '', summary];
+      if (trends.length > 0) lines.push('', 'Sous-tendances : ' + trends.join(', '));
+      if (seasons) lines.push('', 'Saisons : ' + seasons);
+      if (products.length > 0) {
+        lines.push('', `${products.length} idée(s) de produits :`);
+        products.forEach((p) => {
+          lines.push(`- ${p.title}${p.estPrice ? ` (~${p.estPrice})` : ''} — ${p.marketingAngle}`);
+        });
+      }
+      if (sources.length > 0) {
+        lines.push('', 'Sources :', ...sources.slice(0, 6).map((s) => `- ${s}`));
+      }
+      return lines.join('\n');
     } catch (e) {
       return `Erreur lors de la veille : ${(e as Error).message}`;
     }

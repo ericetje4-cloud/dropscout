@@ -11,6 +11,7 @@ import { setApiKey, setModel, DEFAULT_MODEL } from '@/lib/gemini';
 import { setDisplayCurrency } from '@/lib/format';
 import { refreshDueNiches } from '@/lib/refresh';
 import { registerNicheRefresh } from '@/lib/background-sync';
+import { primeProxyBaseCache } from '@/lib/aliexpress-api';
 import { useNavigation } from '@/hooks/useNavigation';
 import { ToastProvider } from '@/components/ui';
 import { DashboardPage } from '@/pages/DashboardPage';
@@ -35,6 +36,10 @@ export default function App() {
       setModel(model ?? DEFAULT_MODEL);
       const currency = await getSetting('currency');
       if (currency) setDisplayCurrency(currency);
+      // Pré-charge l'URL du proxy en cache synchrone (pour le fallback image
+      // AliExpress qui ne peut pas être async dans un tag <img>).
+      const proxyUrl = await getSetting('proxyUrl');
+      if (proxyUrl) primeProxyBaseCache(proxyUrl);
       setupPWA();
       if (cancelled) return;
       setInited(true);

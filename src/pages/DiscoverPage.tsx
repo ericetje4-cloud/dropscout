@@ -9,10 +9,19 @@ import { useEffect, useState } from 'react';
 import { Telescope, Sparkles, Loader2, ExternalLink, Save, Bell, Trash2 } from 'lucide-react';
 import { Layout } from '@/components/Layout';
 import { Field, ScoreBar, scoreColor, useToast, EmptyState } from '@/components/ui';
+import { NicheProductCard } from '@/components/NicheProductCard';
 import { addProduct, useStore, addNiche, removeNiche } from '@/hooks/useStore';
 import { getSetting, setSetting } from '@/lib/db';
-import { analyzeProduct, researchNiche } from '@/lib/research';
+import {
+  analyzeProduct,
+  researchNiche,
+  enrichNicheReport,
+  parseStoredReport,
+  type NicheReport,
+  type NicheProduct,
+} from '@/lib/research';
 import { refreshNiche } from '@/lib/refresh';
+import { isAliExpressAvailable } from '@/lib/aliexpress-api';
 import { scoreProduct } from '@/lib/scoring';
 import { computeMargin } from '@/lib/scoring';
 import { formatMoney, formatRelative, getDisplayCurrency, toISODate } from '@/lib/format';
@@ -23,8 +32,23 @@ type Tab = 'analyze' | 'niche' | 'watched';
 
 export function DiscoverPage() {
   const [tab, setTab] = useState<Tab>('analyze');
+  const [pendingAnalyze, setPendingAnalyze] = useState<string | null>(null);
   const { niches } = useStore();
   const watchedCount = niches.length;
+
+  // Un produit envoyé depuis la veille (niche/watched) → bascule sur l'onglet
+  // analyse et pré-remplit l'input.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      if (typeof detail === 'string') {
+        setPendingAnalyze(detail);
+        setTab('analyze');
+      }
+    };
+    window.addEventListener('dropscout:analyze', handler);
+    return () => window.removeEventListener('dropscout:analyze', handler);
+  }, []);
 
   return (
     <Layout title="Découvrir">
@@ -61,7 +85,10 @@ export function DiscoverPage() {
       </div>
 
       {tab === 'analyze' ? (
-        <AnalyzePanel />
+        <AnalyzePanel
+          pendingInput={pendingAnalyze}
+          onConsumed={() => setPendingAnalyze(null)}
+        />
       ) : tab === 'niche' ? (
         <NichePanel />
       ) : (
@@ -84,7 +111,13 @@ interface AnalysisResult {
   input: string;
 }
 
-function AnalyzePanel() {
+function AnalyzePanel({
+  pendingInput,
+  onConsumed,
+}: {
+  pendingInput?: string | null;
+  onConsumed?: () => void;
+}) {
   const { toast } = useToast();
   const [product, setProduct] = useState('');
   const [costPrice, setCostPrice] = useState('');
@@ -92,6 +125,15 @@ function AnalyzePanel() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [saved, setSaved] = useState(false);
+
+  // Pré-remplit l'input quand un produit arrive de l'onglet veille.
+  useEffect(() => {
+    if (pendingInput) {
+      setProduct(pendingInput);
+      setResult(null);
+      onConsumed?.();
+    }
+  }, [pendingInput, onConsumed]);
 
   async function run() {
     if (!product.trim()) {
@@ -303,24 +345,24 @@ function SubScore({ label, value }: { label: string; value: number }) {
 }
 
 // ---------------------------------------------------------------------------
-// Panneau veille de niche
+// Panneau veille de niche (rapport structuré + enrichissement AliExpress)
 // ---------------------------------------------------------------------------
-
-interface NicheResult {
-  report: string;
-  sources: string[];
-}
 
 function NichePanel() {
   const { toast } = useToast();
   const { niches } = useStore();
   const [niche, setNiche] = useState('');
   const [region, setRegion] = useState('FR');
-  const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<'idle' | 'researching' | 'enriching'>('idle');
   const [watching, setWatching] = useState(false);
-  const [result, setResult] = useState<NicheResult | null>(null);
+  const [result, setResult] = useState<NicheReport | null>(null);
+  const [aliAvailable, setAliAvailable] = useState<boolean | null>(null);
 
-  // true si la niche courante est déjà surveillée.
+  // Détecte la dispo AliExpress au montage (cache le bouton enrichir si KO).
+  useEffect(() => {
+    void isAliExpressAvailable().then(setAliAvailable);
+  }, []);
+
   const alreadyWatched = niches.some(
     (n) => n.label.toLowerCase() === niche.trim().toLowerCase() && n.region === (region || 'FR'),
   );
@@ -334,15 +376,25 @@ function NichePanel() {
       toast('Ajoute ta clé Gemini dans les Réglages.', 'warning');
       return;
     }
-    setBusy(true);
     setResult(null);
+    setPhase('researching');
     try {
-      const r = await researchNiche(niche.trim(), region || 'FR');
-      setResult(r);
+      const report = await researchNiche(niche.trim(), region || 'FR');
+
+      // Enrichissement AliExpress (photos/prix réels) si disponible.
+      if (aliAvailable && report.products.length > 0) {
+        setPhase('enriching');
+        try {
+          await enrichNicheReport(report);
+        } catch {
+          // Non fatal : on garde le rapport non enrichi.
+        }
+      }
+      setResult(report);
     } catch (e) {
       toast((e as Error).message, 'error');
     } finally {
-      setBusy(false);
+      setPhase('idle');
     }
   }
 
@@ -353,7 +405,7 @@ function NichePanel() {
       await addNiche({
         label: niche.trim(),
         region: region || 'FR',
-        lastReport: result.report,
+        lastReport: JSON.stringify(result),
         lastSources: result.sources,
         lastCheckedAt: toISODate(new Date()),
       });
@@ -363,6 +415,14 @@ function NichePanel() {
     } finally {
       setWatching(false);
     }
+  }
+
+  function analyzeProductFromNiche(p: NicheProduct) {
+    // Pousse le produit dans l'onglet "Analyser" via un état partagé simple :
+    // on navigue vers l'onglet analyse avec le titre pré-rempli.
+    const input = p.aliUrl ?? p.title;
+    window.dispatchEvent(new CustomEvent('dropscout:analyze', { detail: input }));
+    toast('Produit envoyé vers l’analyse → onglet « Analyser »', 'info');
   }
 
   if (!hasApiKey()) {
@@ -399,59 +459,133 @@ function NichePanel() {
         </select>
       </Field>
 
-      <button onClick={() => void run()} disabled={busy} className="btn-primary w-full">
-        {busy ? <Loader2 size={16} className="animate-spin" /> : <Telescope size={16} />}
-        {busy ? 'Veille en cours…' : 'Lancer la veille'}
+      <button onClick={() => void run()} disabled={phase !== 'idle'} className="btn-primary w-full">
+        {phase !== 'idle' ? <Loader2 size={16} className="animate-spin" /> : <Telescope size={16} />}
+        {phase === 'researching'
+          ? 'Veille en cours…'
+          : phase === 'enriching'
+            ? 'Récupération des images produits…'
+            : 'Lancer la veille'}
       </button>
 
-      {result && (
-        <div className="card space-y-3 p-4">
-          <div>
-            <p className="mb-1 text-xs font-semibold text-slate-400">
-              Rapport de veille — « {niche} » ({region})
-            </p>
-            <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">
-              {result.report}
-            </p>
-          </div>
-          {result.sources.length > 0 && (
-            <div>
-              <p className="mb-1 text-xs font-semibold text-slate-400">Sources</p>
-              <ul className="space-y-1">
-                {result.sources.slice(0, 8).map((s, i) => (
-                  <li key={i}>
-                    <a
-                      href={s}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline dark:text-brand-400"
-                    >
-                      <ExternalLink size={11} /> {s}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+      {aliAvailable === false && hasApiKey() && (
+        <p className="rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+          ℹ️ AliExpress non configuré : la veille affichera les produits sans photos réelles.
+          Voir <code>proxy/README.md</code> pour activer les images.
+        </p>
+      )}
 
-          {/* Surveiller : ajoute la niche au rafraîchissement automatique */}
-          <button
-            onClick={() => void watch()}
-            disabled={watching || alreadyWatched}
-            className="btn-secondary w-full"
-          >
-            {alreadyWatched ? (
-              '🔔 Déjà surveillée'
-            ) : watching ? (
-              <Loader2 size={15} className="animate-spin" />
-            ) : (
-              <>
-                <Bell size={15} /> Surveiller cette niche (auto-refresh)
-              </>
+      {result && <NicheReportView report={result} nicheLabel={niche} onWatch={watch} watching={watching} alreadyWatched={alreadyWatched} onAnalyzeProduct={analyzeProductFromNiche} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Affichage d'un rapport de veille structuré
+// ---------------------------------------------------------------------------
+
+function NicheReportView({
+  report,
+  nicheLabel,
+  onWatch,
+  watching,
+  alreadyWatched,
+  onAnalyzeProduct,
+}: {
+  report: NicheReport;
+  nicheLabel: string;
+  onWatch: () => void;
+  watching: boolean;
+  alreadyWatched: boolean;
+  onAnalyzeProduct: (p: NicheProduct) => void;
+}) {
+  const enrichedCount = report.products.filter((p) => p.image).length;
+  return (
+    <div className="space-y-3">
+      {/* Synthèse */}
+      <div className="card space-y-3 p-4">
+        <div>
+          <p className="mb-1 text-xs font-semibold text-slate-400">
+            Synthèse — « {nicheLabel} »
+          </p>
+          <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">
+            {report.summary}
+          </p>
+        </div>
+
+        {report.trends.length > 0 && (
+          <div>
+            <p className="mb-1 text-xs font-semibold text-slate-400">Sous-tendances</p>
+            <div className="flex flex-wrap gap-1.5">
+              {report.trends.map((t, i) => (
+                <span key={i} className="rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-700 dark:bg-brand-950/40 dark:text-brand-300">
+                  {t}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {report.seasons && (
+          <div>
+            <p className="mb-1 text-xs font-semibold text-slate-400">Saisons / événements</p>
+            <p className="text-sm text-slate-600 dark:text-slate-300">{report.seasons}</p>
+          </div>
+        )}
+
+        {report.sources.length > 0 && (
+          <details className="text-xs">
+            <summary className="cursor-pointer font-semibold text-slate-400">
+              Sources ({report.sources.length})
+            </summary>
+            <ul className="mt-1 space-y-1">
+              {report.sources.slice(0, 8).map((s, i) => (
+                <li key={i}>
+                  <a href={s} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-brand-600 hover:underline dark:text-brand-400">
+                    <ExternalLink size={11} /> {s}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+
+      {/* Produits */}
+      {report.products.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-sm font-semibold">
+              {report.products.length} idée(s) de produits
+            </h3>
+            {enrichedCount > 0 && (
+              <span className="text-xs text-slate-400">
+                {enrichedCount} avec photo AliExpress
+              </span>
             )}
-          </button>
+          </div>
+          {report.products.map((p, i) => (
+            <NicheProductCard key={i} product={p} niche={nicheLabel} onAnalyze={onAnalyzeProduct} />
+          ))}
         </div>
       )}
+
+      {/* Surveiller */}
+      <button
+        onClick={onWatch}
+        disabled={watching || alreadyWatched}
+        className="btn-secondary w-full"
+      >
+        {alreadyWatched ? (
+          '🔔 Déjà surveillée'
+        ) : watching ? (
+          <Loader2 size={15} className="animate-spin" />
+        ) : (
+          <>
+            <Bell size={15} /> Surveiller cette niche (auto-refresh)
+          </>
+        )}
+      </button>
     </div>
   );
 }
@@ -538,9 +672,7 @@ function WatchedPanel() {
             </div>
 
             {n.lastReport && (
-              <p className="mt-2 line-clamp-4 whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300">
-                {n.lastReport}
-              </p>
+              <WatchedReport niche={n} />
             )}
 
             <div className="mt-3 flex gap-2">
@@ -567,6 +699,53 @@ function WatchedPanel() {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Affiche le rapport stocké d'une niche surveillée (rétro-compatible : texte
+ * brut si ancien format, cartes produits avec images si nouveau format).
+ */
+function WatchedReport({ niche }: { niche: Niche }) {
+  const { toast } = useToast();
+  const [expanded, setExpanded] = useState(false);
+  const report = parseStoredReport(niche.lastReport);
+
+  if (!report) return null;
+
+  const hasProducts = report.products.length > 0;
+
+  function analyzeProduct(p: NicheProduct) {
+    window.dispatchEvent(
+      new CustomEvent('dropscout:analyze', { detail: p.aliUrl ?? p.title }),
+    );
+    toast('Produit envoyé vers l’analyse → onglet « Analyser »', 'info');
+  }
+
+  return (
+    <div className="mt-2 space-y-2">
+      <p className="line-clamp-3 whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300">
+        {report.summary}
+      </p>
+
+      {hasProducts && (
+        <>
+          <button
+            onClick={() => setExpanded((e) => !e)}
+            className="text-xs font-medium text-brand-600 hover:underline dark:text-brand-400"
+          >
+            {expanded ? 'Masquer les produits' : `${report.products.length} produit(s) — afficher`}
+          </button>
+          {expanded && (
+            <div className="space-y-2">
+              {report.products.map((p, i) => (
+                <NicheProductCard key={i} product={p} niche={niche.label} onAnalyze={analyzeProduct} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
