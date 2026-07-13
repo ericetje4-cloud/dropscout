@@ -50,14 +50,19 @@ export default function App() {
       setInited(true);
 
       // --- Veille automatique (3 couches) ---
-      const autoRefresh = (await getSetting('autoRefreshEnabled')) ?? true; // activé par défaut
+      // Ne consomme du quota Gemini QUE si l'onboarding est fait ET auto-refresh
+      // activé ET des niches sont réellement surveillées. Évite de gaspiller le
+      // quota gratuit (~100 req/jour) sur une fresh install ou sans niches.
+      const autoRefresh = (await getSetting('autoRefreshEnabled')) ?? true;
 
-      if (autoRefresh) {
+      if (autoRefresh && didOnboard === true) {
         // Couche 3 : Periodic Background Sync (arrière-plan réel, Chromium + installé).
         const hours = (await getSetting('refreshIntervalHours')) ?? 24;
         void registerNicheRefresh(hours * 60 * 60 * 1000).catch(() => {});
 
         // Couche 1 : catch-up silencieux à l'ouverture (garanti, tous navigateurs).
+        // S'il n'y a aucune niche surveillée, refreshDueNiches ne fait AUCUN
+        // appel réseau (court-circuité dans le moteur).
         void refreshDueNiches().catch((e) => console.warn('[veille] catch-up', e));
       }
     })();

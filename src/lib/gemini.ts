@@ -304,9 +304,9 @@ function formatListError(status: number, googleMsg: string, key: string): string
 }
 
 /**
- * Valide une clé API en deux temps :
- *   1. ListModels → valide la clé.
- *   2. Ping generateContent sur le modèle choisi.
+ * Valide une clé API en un seul appel réseau (listModels).
+ * On ne ping plus generateContent : listModels suffit à valider la clé ET
+ * vérifier que le modèle existe, ce qui économise le quota gratuit (~100 req/j).
  */
 export async function testApiKey(
   key: string,
@@ -316,8 +316,21 @@ export async function testApiKey(
   if (!trimmed) return { ok: false, message: 'Clé vide.' };
 
   const keyCheck = await listModels(trimmed);
-  if (!keyCheck.ok) return { ok: false, message: keyCheck.message };
+  if (!keyCheck.ok) {
+    // Cas particulier 429 : message explicite (quota minute, pas clé invalide).
+    if (keyCheck.message.includes('HTTP 429')) {
+      return {
+        ok: false,
+        message:
+          'Quota Gemini atteint (trop de requêtes sur la dernière minute). ' +
+          'Ta clé est VALIDE — patiente 60 s et relance le test. ' +
+          '(Quota gratuit : ~15 req/min, ~100/jour.)',
+      };
+    }
+    return { ok: false, message: keyCheck.message };
+  }
 
+  // listModels a répondu 200 → la clé est valide.
   const available = keyCheck.models.map((m) => m.id);
   if (!available.includes(model)) {
     const suggest = available.filter((m) => m.startsWith('gemini-')).slice(0, 3);
@@ -327,23 +340,5 @@ export async function testApiKey(
     };
   }
 
-  const url = `${BASE}/models/${model}:generateContent?key=${encodeURIComponent(trimmed)}`;
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: 'ok' }] }],
-        generationConfig: { maxOutputTokens: 1 },
-      }),
-    });
-    if (resp.ok) return { ok: true };
-    if (resp.status === 400 || resp.status === 403) {
-      const body = await resp.json().catch(() => null);
-      return { ok: false, message: body?.error?.message ?? 'Modèle rejeté par Google.' };
-    }
-    return { ok: false, message: `Erreur HTTP ${resp.status}.` };
-  } catch {
-    return { ok: false, message: 'Réseau injoignable.' };
-  }
+  return { ok: true };
 }
