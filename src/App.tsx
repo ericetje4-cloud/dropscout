@@ -20,11 +20,13 @@ import { WatchlistPage } from '@/pages/WatchlistPage';
 import { ShopsPage } from '@/pages/ShopsPage';
 import { AgentPage } from '@/pages/AgentPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { OnboardingPage } from '@/pages/OnboardingPage';
 
 export default function App() {
   const { ready } = useStore();
   const { route } = useNavigation();
   const [inited, setInited] = useState(false);
+  const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,8 +42,11 @@ export default function App() {
       // AliExpress qui ne peut pas être async dans un tag <img>).
       const proxyUrl = await getSetting('proxyUrl');
       if (proxyUrl) primeProxyBaseCache(proxyUrl);
+      // Onboarding : lu après le premier lancement.
+      const didOnboard = await getSetting('hasCompletedOnboarding');
       setupPWA();
       if (cancelled) return;
+      setOnboardingDone(didOnboard === true);
       setInited(true);
 
       // --- Veille automatique (3 couches) ---
@@ -115,6 +120,15 @@ export default function App() {
         </div>
         <p className="text-sm text-slate-400">DropScout…</p>
       </div>
+    );
+  }
+
+  // Onboarding au premier lancement (non bloquant après).
+  if (onboardingDone === false) {
+    return (
+      <ToastProvider>
+        <OnboardingPage onDone={() => setOnboardingDone(true)} />
+      </ToastProvider>
     );
   }
 

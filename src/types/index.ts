@@ -151,7 +151,8 @@ export type SettingKey =
   | 'autoRefreshEnabled' // rafraîchissement auto de la veille
   | 'refreshIntervalHours' // intervalle en heures (6/12/24)
   | 'nichesSeenAt' // timestamp dernière visite des niches (badge nouveautés)
-  | 'enabledSuppliers'; // SupplierId[] activés pour la veille (défaut: tous)
+  | 'enabledSuppliers' // SupplierId[] activés pour la veille (défaut: tous)
+  | 'hasCompletedOnboarding'; // true après le premier parcours d'onboarding
 
 export interface Setting<K extends SettingKey = SettingKey> {
   key: K;
@@ -170,6 +171,7 @@ export interface SettingValueMap {
   refreshIntervalHours: number;
   nichesSeenAt: number;
   enabledSuppliers: SupplierId[];
+  hasCompletedOnboarding: boolean;
 }
 export type SettingValue<K extends SettingKey> = SettingValueMap[K];
 
