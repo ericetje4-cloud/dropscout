@@ -203,6 +203,15 @@ export async function generateContent(
     } catch {
       // ignore
     }
+    // Cas particulier 429 : message clair (quota gratuit, pas un bug).
+    if (resp.status === 429) {
+      throw new GeminiError(
+        'Quota Gemini atteint (trop de requêtes). La clé est VALIDE — ' +
+          'attends 1 min (quota minute) ou demain 9h (quota jour, reset minuit Los Angeles). ' +
+          'Quota gratuit : ~15 req/min, ~100/jour.',
+        429,
+      );
+    }
     throw new GeminiError(message, resp.status);
   }
 

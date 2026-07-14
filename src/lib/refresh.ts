@@ -16,6 +16,7 @@ import { getAllNiches, getSetting, putNiche } from '@/lib/db';
 import { setApiKey } from '@/lib/gemini';
 import { researchNiche, type NicheReport } from '@/lib/research';
 import { putAnalysis } from '@/lib/db';
+import { isQuotaCoolingDown, onQuota429 } from '@/lib/quota-guard';
 import { toISODate } from '@/lib/format';
 import type { Niche } from '@/types';
 
@@ -122,6 +123,14 @@ export async function refreshDueNiches(
 ): Promise<RefreshResult> {
   const result: RefreshResult = { refreshed: [], failed: [], skipped: [] };
 
+  // Garde-fou quota : si on vient de prendre un 429, on s'abstient pendant 5 min
+  // pour ne pas gaspiller le quota restant. (Ignore en cas de force manuel.)
+  if (!options.force && isQuotaCoolingDown()) {
+    const all = await getAllNiches();
+    result.skipped.push(...all.map((n) => ({ nicheId: n.id, label: n.label })));
+    return result;
+  }
+
   const hasKey = await prepareApiKey();
   if (!hasKey) {
     // Sans clé, on ne peut rien faire. Pas d'erreur levée : l'app reste utilisable.
@@ -143,11 +152,15 @@ export async function refreshDueNiches(
       await refreshNiche(niche);
       result.refreshed.push({ nicheId: niche.id, label: niche.label });
     } catch (e) {
-      result.failed.push({
-        nicheId: niche.id,
-        label: niche.label,
-        error: (e as Error).message,
-      });
+      // 429 : enregistre la pénalité, marque cette niche ET les restantes comme
+      // échouées, puis sort (inutile de continuer : quota saturé pour toutes).
+      onQuota429(e);
+      const msg = (e as Error).message;
+      const remaining = due.slice(due.indexOf(niche));
+      result.failed.push(
+        ...remaining.map((n) => ({ nicheId: n.id, label: n.label, error: msg })),
+      );
+      break;
     }
   }
 
