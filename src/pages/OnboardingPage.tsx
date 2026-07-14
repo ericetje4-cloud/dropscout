@@ -36,16 +36,22 @@ export function OnboardingPage({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
   const platform = detectPlatform();
   const [alreadyInstalled] = useState(() => isInstalled());
+  // true quand la clé a été testée ET validée dans l'étape key.
+  const [keyValid, setKeyValid] = useState(false);
 
   // Étapes dynamiques : on saute l'installation si déjà installée.
-  const steps = buildSteps(platform, alreadyInstalled);
+  const steps = buildSteps(platform, alreadyInstalled, setKeyValid);
   const total = steps.length;
   const current = steps[step];
   const isLast = step === total - 1;
 
   async function next() {
-    // L'étape clé Gemini valide avant de passer.
-    if (current.id === 'key' && !(await validateKey())) return;
+    // L'étape clé Gemini exige une clé testée valide avant de passer.
+    if (current.id === 'key' && !keyValid) {
+      // Pas de toast ici (useToast est dans KeyForm) : on laisse le bouton
+      // "Tester la clé" faire le travail.
+      return;
+    }
     if (isLast) {
       await setSetting('hasCompletedOnboarding', true);
       onDone();
@@ -133,10 +139,14 @@ interface Step {
   content: React.ReactNode;
 }
 
-function buildSteps(platform: Platform, alreadyInstalled: boolean): Step[] {
+function buildSteps(
+  platform: Platform,
+  alreadyInstalled: boolean,
+  setKeyValid: (v: boolean) => void,
+): Step[] {
   const steps: Step[] = [{ id: 'welcome', content: <WelcomeStep /> }];
 
-  steps.push({ id: 'key', content: <KeyStep /> });
+  steps.push({ id: 'key', content: <KeyStep onValidated={() => setKeyValid(true)} /> });
 
   if (!alreadyInstalled) {
     steps.push({ id: 'install', optional: true, content: <InstallStep platform={platform} /> });
@@ -187,7 +197,7 @@ function Feature({ icon: Icon, text }: { icon: LucideIcon; text: string }) {
 // Étape : Clé Gemini (avec validation)
 // ---------------------------------------------------------------------------
 
-function KeyStep() {
+function KeyStep({ onValidated }: { onValidated: () => void }) {
   return (
     <div>
       <StepHeader icon={KeyRound} title="Connectez l'IA" />
@@ -204,15 +214,16 @@ function KeyStep() {
         </a>{' '}
         puis collez-la ci-dessous.
       </p>
-      <KeyForm />
+      <KeyForm onValidated={onValidated} />
     </div>
   );
 }
 
-function KeyForm() {
+function KeyForm({ onValidated }: { onValidated: () => void }) {
   const { toast } = useToast();
   const [key, setKey] = useState('');
   const [testing, setTesting] = useState(false);
+  const [isValidated, setIsValidated] = useState(false);
 
   async function test() {
     // Nettoyage robuste : trim + retire espaces internes (copier-coller mobile).
@@ -228,8 +239,11 @@ function KeyForm() {
     if (result.ok) {
       await setSetting('geminiKey', clean);
       setApiKey(clean);
+      setIsValidated(true);
+      onValidated();
       toast('Clé valide ✓ — enregistrée', 'success');
     } else {
+      setIsValidated(false);
       toast(`Échec : ${result.message}`, 'error');
     }
   }
@@ -250,7 +264,11 @@ function KeyForm() {
         <input
           type="password"
           value={key}
-          onChange={(e) => setKey(e.target.value)}
+          onChange={(e) => {
+            setKey(e.target.value);
+            // Toute édition invalide le statut validé précédent.
+            if (isValidated) setIsValidated(false);
+          }}
           onBlur={() => setKey(key.trim().replace(/\s+/g, ''))}
           placeholder="AIza..."
           className="input"
@@ -265,30 +283,18 @@ function KeyForm() {
       )}
       <button onClick={() => void test()} disabled={testing} className="btn-secondary w-full">
         {testing ? <Loader2 size={16} className="animate-spin" /> : <KeyRound size={16} />}
-        {testing ? 'Test en cours…' : 'Tester la clé'}
+        {testing ? 'Test en cours…' : isValidated ? 'Re-tester la clé' : 'Tester la clé'}
       </button>
+      {isValidated && (
+        <p className="text-xs font-medium text-green-600 dark:text-green-400">
+          ✓ Clé validée — cliquez sur « Continuer » pour passer à l'étape suivante.
+        </p>
+      )}
       <p className="text-xs text-slate-400">
         Stockée localement sur cet appareil. Jamais envoyée ailleurs.
       </p>
     </div>
   );
-}
-
-/** Valide la clé avant de passer à l'étape suivante (utilisé par next()). */
-async function validateKey(): Promise<boolean> {
-  const { toast } = useToast();
-  const key = await getSettingInline('geminiKey');
-  if (!key) {
-    toast('Ajoutez et testez votre clé Gemini pour continuer.', 'warning');
-    return false;
-  }
-  return true;
-}
-
-// Helper minimal pour lire le setting sans alourdir les imports.
-async function getSettingInline(k: string): Promise<string | undefined> {
-  const { getSetting } = await import('@/lib/db');
-  return (await getSetting(k as never)) as string | undefined;
 }
 
 // ---------------------------------------------------------------------------
