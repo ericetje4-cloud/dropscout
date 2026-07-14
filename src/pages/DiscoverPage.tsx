@@ -109,6 +109,8 @@ interface AnalysisResult {
   costPrice?: number;
   sellPrice?: number;
   input: string;
+  /** true si l'IA était indisponible (quota/pas de clé) → score local seul. */
+  degraded?: boolean;
 }
 
 function AnalyzePanel({
@@ -140,42 +142,87 @@ function AnalyzePanel({
       toast('Décris le produit ou colle une URL.', 'warning');
       return;
     }
-    if (!hasApiKey()) {
-      toast('Ajoute ta clé Gemini dans les Réglages.', 'warning');
-      return;
-    }
     setBusy(true);
     setSaved(false);
     setResult(null);
-    try {
-      const cost = costPrice ? Number(costPrice) : undefined;
-      const sell = sellPrice ? Number(sellPrice) : undefined;
-      const analysis = await analyzeProduct({
-        input: product.trim(),
-        costPrice: cost,
-        sellPrice: sell,
-        currency: getDisplayCurrency(),
-      });
-      const score = scoreProduct({
-        costPrice: cost,
-        sellPrice: sell,
-        demand: analysis.scores.demand,
-        competition: analysis.scores.competition,
-        seasonality: analysis.scores.seasonality,
-      });
-      setResult({
-        report: analysis.report,
-        score,
-        adHooks: analysis.adHooks,
-        costPrice: cost,
-        sellPrice: sell,
-        input: product.trim(),
-      });
-    } catch (e) {
-      toast((e as Error).message, 'error');
-    } finally {
-      setBusy(false);
+
+    const cost = costPrice ? Number(costPrice) : undefined;
+    const sell = sellPrice ? Number(sellPrice) : undefined;
+    const input = product.trim();
+
+    // --- Tentative analyse IA complète ---
+    if (hasApiKey()) {
+      try {
+        const analysis = await analyzeProduct({
+          input,
+          costPrice: cost,
+          sellPrice: sell,
+          currency: getDisplayCurrency(),
+        });
+        const score = scoreProduct({
+          costPrice: cost,
+          sellPrice: sell,
+          demand: analysis.scores.demand,
+          competition: analysis.scores.competition,
+          seasonality: analysis.scores.seasonality,
+        });
+        setResult({
+          report: analysis.report,
+          score,
+          adHooks: analysis.adHooks,
+          costPrice: cost,
+          sellPrice: sell,
+          input,
+          degraded: false,
+        });
+        return;
+      } catch (e) {
+        const msg = (e as Error).message;
+        const quota = msg.includes('429') || msg.toLowerCase().includes('quota');
+        // Mode dégradé : on calcule quand même le score local (marge + prix).
+        const localScore = scoreProduct({ costPrice: cost, sellPrice: sell });
+        setResult({
+          report: quota
+            ? '⚠️ Quota Gemini atteint — analyse IA indisponible pour le moment.\n\n' +
+              'Voici le score basé sur la marge et le prix (les critères IA demande/concurrence/timing ' +
+              'sont estimés à neutre 50/100). Relance l\'analyse complète quand le quota sera remonté ' +
+              '(demain 9h ou dans 1 min si quota minute).'
+            : `⚠️ Analyse IA échouée : ${msg}\n\nScore local basé sur la marge et le prix.`,
+          score: localScore,
+          adHooks: [],
+          costPrice: cost,
+          sellPrice: sell,
+          input,
+          degraded: true,
+        });
+        toast(
+          quota
+            ? 'Quota Gemini atteint — score local affiché (mode dégradé).'
+            : 'Analyse IA échouée — score local affiché.',
+          quota ? 'warning' : 'error',
+        );
+        return;
+      } finally {
+        setBusy(false);
+      }
     }
+
+    // --- Pas de clé du tout : score local uniquement ---
+    const localScore = scoreProduct({ costPrice: cost, sellPrice: sell });
+    setResult({
+      report:
+        '💡 Mode sans IA : score basé uniquement sur la marge et le prix.\n' +
+        'Ajoute une clé Gemini dans les Réglages pour une analyse complète ' +
+        '(demande, concurrence, timing, accroches pub).',
+      score: localScore,
+      adHooks: [],
+      costPrice: cost,
+      sellPrice: sell,
+      input,
+      degraded: true,
+    });
+    setBusy(false);
+    toast('Score local calculé (sans IA).', 'info');
   }
 
   async function save() {
@@ -267,6 +314,14 @@ function AnalysisView({
 
   return (
     <div className="card space-y-3 p-4">
+      {/* Bandeau mode dégradé (IA indisponible) */}
+      {result.degraded && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+          ⚠️ Mode dégradé : score basé sur la marge/prix uniquement (IA indisponible).
+          Les critères demande/concurrence/timing sont estimés à neutre (50/100).
+        </div>
+      )}
+
       {/* Score */}
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold">Score gagnant</span>
