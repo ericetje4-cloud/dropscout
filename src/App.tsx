@@ -12,6 +12,7 @@ import { setDisplayCurrency } from '@/lib/format';
 import { refreshDueNiches } from '@/lib/refresh';
 import { registerNicheRefresh } from '@/lib/background-sync';
 import { primeProxyBaseCache } from '@/lib/aliexpress-api';
+import { seedCategoryNiches } from '@/lib/categories';
 import { useNavigation } from '@/hooks/useNavigation';
 import { ToastProvider } from '@/components/ui';
 import { DashboardPage } from '@/pages/DashboardPage';
@@ -48,6 +49,15 @@ export default function App() {
       if (cancelled) return;
       setOnboardingDone(didOnboard === true);
       setInited(true);
+
+      // --- Sème les catégories surveillées (Fitness & Maison) après onboarding ---
+      // Idempotent : ne crée que les catégories manquantes. Sans danger si rappelé.
+      if (didOnboard === true) {
+        const catEnabled = (await getSetting('categoryWatchEnabled')) ?? true;
+        if (catEnabled) {
+          await seedCategoryNiches().catch((e) => console.warn('[catégories] seed', e));
+        }
+      }
 
       // --- Veille automatique (3 couches) ---
       // Ne consomme du quota Gemini QUE si l'onboarding est fait ET auto-refresh

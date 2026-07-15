@@ -120,6 +120,82 @@ Réponds UNIQUEMENT avec un objet JSON valide (aucun texte hors JSON) selon ce s
   return report;
 }
 
+// ---------------------------------------------------------------------------
+// Veille de catégorie (surveillance continue — détection d'émergence)
+// ---------------------------------------------------------------------------
+
+/** Rapport de catégorie : étend NicheReport avec un signal de tendance émergente. */
+export interface CategoryReport extends NicheReport {
+  /** true si une tendance NOUVELLE/en hausse marquée est détectée. */
+  trendEmerging: boolean;
+  /** Explication courte de la tendance (pour la notification + badge). */
+  trendReason: string;
+}
+
+/**
+ * Veille d'une catégorie générique surveillée en continu.
+ * Variante de researchNiche : le prompt est orienté DÉTECTION D'ÉMERGENCE —
+ * Gemini doit juger s'il y a une tendance NOUVELLE vs les tendances habituelles.
+ */
+export async function researchCategoryNiche(
+  label: string,
+  region = 'FR',
+): Promise<CategoryReport> {
+  if (!hasApiKey()) {
+    throw new Error('Aucune clé API Gemini configurée. Ajoutez-la dans les Réglages.');
+  }
+
+  const prompt = `Tu es un expert en dropshipping et e-commerce. La catégorie « ${label} » est surveillée en continu pour le marché ${region}.
+
+Analyse cette catégorie ET juge s'il y a une tendance NOUVELLE ou en hausse marquée ces dernières semaines (un produit qui devient viral, une sous-tendance qui explose, un événement à venir qui booste la demande). Sois strict : "trendEmerging": true UNIQUEMENT s'il y a un signal clair et récent, pas pour les tendances habituelles evergreen.
+
+Réponds UNIQUEMENT avec un objet JSON valide (aucun texte hors JSON) selon ce schéma :
+{
+  "trendEmerging": true,
+  "trendReason": "1 phrase : quelle est la tendance émergente et pourquoi (ex: 'Lampe LED coucher de soleil devient virale sur TikTok, +300% de recherches')",
+  "summary": "synthèse 3-5 lignes de la catégorie et des tendances",
+  "trends": ["sous-tendance 1", "..."],
+  "seasons": "événements/saisons à venir",
+  "products": [
+    {
+      "title": "nom du produit en français",
+      "keywords": "mots-clés de recherche en ANGLAIS (pour AliExpress, CJ, eBay)",
+      "targetAudience": "public cible",
+      "marketingAngle": "angle marketing",
+      "estPrice": "prix de vente estimé"
+    }
+  ]
+}`;
+
+  const resp = await generateContent({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    googleSearch: true,
+    temperature: 0.5, // moins créatif → jugement plus factuel sur l'émergence
+  });
+
+  const cand = resp.candidates?.[0];
+  const text =
+    cand?.content?.parts?.map((p) => ('text' in p ? p.text : '')).join('') ?? '';
+  const sources = extractSources(cand?.groundingMetadata);
+
+  const base = parseNicheReport(text);
+  base.sources = sources;
+
+  // Extraction du signal d'émergence (tolérant si absent du JSON).
+  let trendEmerging = false;
+  let trendReason = '';
+  try {
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const obj = JSON.parse(cleaned) as Record<string, unknown>;
+    trendEmerging = obj.trendEmerging === true;
+    trendReason = typeof obj.trendReason === 'string' ? obj.trendReason : '';
+  } catch {
+    // JSON non parsable → pas de signal d'émergence (sécuritaire).
+  }
+
+  return { ...base, trendEmerging, trendReason };
+}
+
 /**
  * Enrichit un rapport de veille avec les vraies photos/prix/liens AliExpress.
  * Pour chaque produit IA, recherche AliExpress via le proxy et apparie le

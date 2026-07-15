@@ -84,6 +84,14 @@ export interface Niche {
   lastCheckedAt?: string;
   /** Nombre de produits sauvegardés issus de cette niche. */
   productCount?: number;
+  /** Origine : 'user' (ajoutée manuellement) ou 'category' (surveillance auto). */
+  origin?: 'user' | 'category';
+  /** Clé de catégorie (présent si origin === 'category'). */
+  categoryKey?: string;
+  /** true si Gemini a détecté une tendance NOUVELLE/émergente au dernier check. */
+  trendEmerging?: boolean;
+  /** Explication de la tendance détectée (ex: "Lampe LED virale TikTok"). */
+  trendReason?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -152,7 +160,8 @@ export type SettingKey =
   | 'refreshIntervalHours' // intervalle en heures (6/12/24)
   | 'nichesSeenAt' // timestamp dernière visite des niches (badge nouveautés)
   | 'enabledSuppliers' // SupplierId[] activés pour la veille (défaut: tous)
-  | 'hasCompletedOnboarding'; // true après le premier parcours d'onboarding
+  | 'hasCompletedOnboarding' // true après le premier parcours d'onboarding
+  | 'categoryWatchEnabled'; // surveillance auto des catégories fixes (défaut: true)
 
 export interface Setting<K extends SettingKey = SettingKey> {
   key: K;
@@ -172,6 +181,7 @@ export interface SettingValueMap {
   nichesSeenAt: number;
   enabledSuppliers: SupplierId[];
   hasCompletedOnboarding: boolean;
+  categoryWatchEnabled: boolean;
 }
 export type SettingValue<K extends SettingKey> = SettingValueMap[K];
 

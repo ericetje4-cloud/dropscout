@@ -48,21 +48,49 @@ async function runBackgroundRefresh(): Promise<void> {
 }
 
 async function notifyRefresh(result: RefreshResult): Promise<void> {
-  const n = result.refreshed.length;
-  const labels = result.refreshed.map((r) => r.label);
-  const title = n === 1 ? `Veille actualisée : ${labels[0]}` : `${n} veilles actualisées`;
+  // Priorité aux tendances émergentes (catégories avec trendEmerging=true).
+  const trends = result.refreshed.filter((r) => r.trendEmerging);
+  const others = result.refreshed.filter((r) => !r.trendEmerging);
 
+  // Cas 1 : au moins une tendance émergente → notification 🔥 prioritaire.
+  // Les autres actualisations sont ignorées (évite le bruit).
+  if (trends.length > 0) {
+    const title =
+      trends.length === 1
+        ? `🔥 Nouvelle tendance : ${trends[0]!.label}`
+        : `🔥 ${trends.length} nouvelles tendances détectées`;
+    const body = trends
+      .slice(0, 3)
+      .map((t) => `${t.label}${t.trendReason ? ` — ${t.trendReason}` : ''}`)
+      .join('\n');
+    await showNotif(title, body, 'trend-detected');
+    return;
+  }
+
+  // Cas 2 : pas de tendance, juste des actualisations classiques.
+  // On ne notifie QUE les niches utilisateur (pas les catégories sans tendance,
+  // pour éviter le bruit quotidien des 2 catégories "rien à signaler").
+  const userNiches = others.filter((r) => !r.isCategory);
+  if (userNiches.length === 0) return;
+
+  const labels = userNiches.map((r) => r.label);
+  const m = userNiches.length;
+  const title = m === 1 ? `Veille actualisée : ${labels[0]}` : `${m} veilles actualisées`;
   const body =
-    n === 1
-      ? result.refreshed[0]!.label
-      : labels.slice(0, 3).join(', ') + (n > 3 ? ` et ${n - 3} autre(s)` : '');
+    m === 1
+      ? labels[0]!
+      : labels.slice(0, 3).join(', ') + (m > 3 ? ` et ${m - 3} autre(s)` : '');
+  await showNotif(title, body, 'niche-refresh');
+}
 
+/** Affiche une notification (helper facteur commun). */
+async function showNotif(title: string, body: string, tag: string): Promise<void> {
   try {
     await sw.registration.showNotification(title, {
       body,
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
-      tag: 'niche-refresh',
+      tag,
       data: { url: '/' },
     });
   } catch (e) {

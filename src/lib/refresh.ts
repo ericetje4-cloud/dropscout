@@ -14,7 +14,7 @@
 
 import { getAllNiches, getSetting, putNiche } from '@/lib/db';
 import { setApiKey } from '@/lib/gemini';
-import { researchNiche, type NicheReport } from '@/lib/research';
+import { researchNiche, researchCategoryNiche, type NicheReport, type CategoryReport } from '@/lib/research';
 import { putAnalysis } from '@/lib/db';
 import { isQuotaCoolingDown, onQuota429 } from '@/lib/quota-guard';
 import { toISODate } from '@/lib/format';
@@ -24,8 +24,19 @@ import type { Niche } from '@/types';
 export const DEFAULT_INTERVAL_HOURS = 24;
 
 /** Résultat d'un rafraîchissement (pour notification / récap UI). */
+export interface RefreshedNiche {
+  nicheId: string;
+  label: string;
+  /** true si une tendance émergente a été détectée (catégories seulement). */
+  trendEmerging?: boolean;
+  /** Explication de la tendance (si trendEmerging). */
+  trendReason?: string;
+  /** true si c'est une catégorie surveillée (vs niche utilisateur). */
+  isCategory?: boolean;
+}
+
 export interface RefreshResult {
-  refreshed: { nicheId: string; label: string }[];
+  refreshed: RefreshedNiche[];
   failed: { nicheId: string; label: string; error: string }[];
   skipped: { nicheId: string; label: string }[];
 }
@@ -83,17 +94,26 @@ export async function getDueNiches(): Promise<Niche[]> {
 export async function refreshNiche(
   niche: Niche,
 ): Promise<{ niche: Niche; report: NicheReport }> {
-  const report = await researchNiche(niche.label, niche.region || 'FR');
+  // Route : les niches de catégorie utilisent le prompt de détection d'émergence.
+  const isCategory = niche.origin === 'category';
+  const report: NicheReport | CategoryReport = isCategory
+    ? await researchCategoryNiche(niche.label, niche.region || 'FR')
+    : await researchNiche(niche.label, niche.region || 'FR');
 
-  // Sérialise le rapport structuré pour le stockage (rétro-compatible : si
-  // l'UI lit un ancien format texte, parseStoredReport le gère).
+  // Sérialise le rapport structuré pour le stockage (rétro-compatible).
   const serialized = JSON.stringify(report);
+
+  // Pour les catégories : on stocke aussi le signal de tendance émergente.
+  const catReport = isCategory ? (report as CategoryReport) : null;
 
   const updated: Niche = {
     ...niche,
     lastReport: serialized,
     lastSources: report.sources,
     lastCheckedAt: toISODate(new Date()),
+    // Signal de tendance (uniquement pour les catégories ; reset sinon).
+    trendEmerging: catReport?.trendEmerging ?? undefined,
+    trendReason: catReport?.trendReason || undefined,
     updatedAt: Date.now(),
   };
   await putNiche(updated);
@@ -101,8 +121,12 @@ export async function refreshNiche(
   // Historisation pour traçabilité / comparaison dans le temps.
   await putAnalysis({
     id: crypto.randomUUID(),
-    input: `Veille niche : ${niche.label} (${niche.region || 'FR'})`,
-    report: report.summary,
+    input: isCategory
+      ? `Veille catégorie : ${niche.label} (${niche.region || 'FR'})`
+      : `Veille niche : ${niche.label} (${niche.region || 'FR'})`,
+    report: catReport?.trendEmerging
+      ? `🔥 ${catReport.trendReason}\n\n${report.summary}`
+      : report.summary,
     createdAt: Date.now(),
   });
 
@@ -149,8 +173,14 @@ export async function refreshDueNiches(
 
   for (const niche of due) {
     try {
-      await refreshNiche(niche);
-      result.refreshed.push({ nicheId: niche.id, label: niche.label });
+      const { niche: updated } = await refreshNiche(niche);
+      result.refreshed.push({
+        nicheId: updated.id,
+        label: updated.label,
+        trendEmerging: updated.trendEmerging,
+        trendReason: updated.trendReason,
+        isCategory: updated.origin === 'category',
+      });
     } catch (e) {
       // 429 : enregistre la pénalité, marque cette niche ET les restantes comme
       // échouées, puis sort (inutile de continuer : quota saturé pour toutes).

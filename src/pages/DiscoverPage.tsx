@@ -694,67 +694,137 @@ function WatchedPanel() {
     );
   }
 
+  // Sépare les catégories surveillées (système) des niches utilisateur.
+  const categories = niches.filter((n) => n.origin === 'category');
+  const userNiches = niches.filter((n) => n.origin !== 'category');
+  const trendsCount = categories.filter((n) => n.trendEmerging).length;
+
   return (
-    <div className="space-y-3">
-      <p className="text-xs text-slate-400">
-        Les niches surveillées sont rafraîchies automatiquement (selon l'intervalle
-        défini dans les Réglages). Ouvre l'app pour déclencher le rafraîchissement si
-        l'arrière-plan n'est pas supporté.
-      </p>
-      {niches.map((n) => {
-        const lastTs = n.lastCheckedAt ? new Date(n.lastCheckedAt).getTime() : 0;
-        const isNew = lastTs > seenAt && seenAt > 0;
-        return (
-          <div key={n.id} className="card p-4">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <p className="truncate font-medium">{n.label}</p>
-                  {isNew && (
-                    <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-950/40 dark:text-green-300">
-                      🆕 Actualisé
-                    </span>
-                  )}
-                  <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800">
-                    {n.region}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-slate-400">
-                  {n.lastCheckedAt
-                    ? `Dernière veille ${formatRelative(n.lastCheckedAt)}`
-                    : 'Jamais rafraîchie'}
-                </p>
-              </div>
-            </div>
-
-            {n.lastReport && (
-              <WatchedReport niche={n} />
+    <div className="space-y-4">
+      {/* Section : Catégories surveillées (auto) */}
+      {categories.length > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              <Telescope size={15} className="text-brand-600" /> Catégories surveillées
+            </h3>
+            {trendsCount > 0 && (
+              <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-700 dark:bg-orange-950/40 dark:text-orange-300">
+                🔥 {trendsCount} tendance{trendsCount > 1 ? 's' : ''}
+              </span>
             )}
-
-            <div className="mt-3 flex gap-2">
-              <button
-                onClick={() => void refreshOne(n)}
-                disabled={refreshingId === n.id}
-                className="btn-secondary flex-1 text-xs"
-              >
-                {refreshingId === n.id ? (
-                  <Loader2 size={13} className="animate-spin" />
-                ) : (
-                  <Telescope size={13} />
-                )}
-                Rafraîchir
-              </button>
-              <button
-                onClick={() => void removeNiche(n.id).then(() => toast('Niche retirée.', 'info'))}
-                className="rounded-xl bg-red-50 p-2.5 text-red-600 hover:bg-red-100 dark:bg-red-950/30"
-                aria-label="Ne plus surveiller"
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
           </div>
-        );
-      })}
+          {categories.map((n) => (
+            <WatchedNicheCard
+              key={n.id}
+              n={n}
+              seenAt={seenAt}
+              refreshing={refreshingId === n.id}
+              onRefresh={() => void refreshOne(n)}
+            />
+          ))}
+        </section>
+      )}
+
+      {/* Section : Vos niches (manuelles) */}
+      {userNiches.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="px-1 text-sm font-semibold text-slate-500 dark:text-slate-400">
+            Vos niches
+          </h3>
+          {userNiches.map((n) => (
+            <WatchedNicheCard
+              key={n.id}
+              n={n}
+              seenAt={seenAt}
+              refreshing={refreshingId === n.id}
+              onRefresh={() => void refreshOne(n)}
+              onRemove={() => void removeNiche(n.id).then(() => toast('Niche retirée.', 'info'))}
+            />
+          ))}
+        </section>
+      )}
+
+      {userNiches.length === 0 && categories.length > 0 && (
+        <p className="px-1 text-xs text-slate-400">
+          Lance une veille dans l'onglet « Veiller » puis clique « Surveiller » pour
+          ajouter tes propres niches.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Carte d'une niche surveillée (catégorie ou utilisateur). */
+function WatchedNicheCard({
+  n,
+  seenAt,
+  refreshing,
+  onRefresh,
+  onRemove,
+}: {
+  n: Niche;
+  seenAt: number;
+  refreshing: boolean;
+  onRefresh: () => void;
+  onRemove?: () => void;
+}) {
+  const lastTs = n.lastCheckedAt ? new Date(n.lastCheckedAt).getTime() : 0;
+  const isNew = lastTs > seenAt && seenAt > 0;
+  return (
+    <div className="card p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate font-medium">{n.label}</p>
+            {n.trendEmerging && (
+              <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-700 dark:bg-orange-950/40 dark:text-orange-300">
+                🔥 Tendance
+              </span>
+            )}
+            {isNew && !n.trendEmerging && (
+              <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-950/40 dark:text-green-300">
+                🆕 Actualisé
+              </span>
+            )}
+            <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800">
+              {n.region}
+            </span>
+          </div>
+          {n.trendReason && (
+            <p className="mt-1 text-xs font-medium text-orange-600 dark:text-orange-400">
+              {n.trendReason}
+            </p>
+          )}
+          <p className="mt-1 text-xs text-slate-400">
+            {n.lastCheckedAt
+              ? `Dernière veille ${formatRelative(n.lastCheckedAt)}`
+              : 'Jamais rafraichie — le sera au prochain cycle'}
+          </p>
+        </div>
+      </div>
+
+      {n.lastReport && <WatchedReport niche={n} />}
+
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="btn-secondary flex-1 text-xs"
+        >
+          {refreshing ? <Loader2 size={13} className="animate-spin" /> : <Telescope size={13} />}
+          Rafraîchir
+        </button>
+        {onRemove && (
+          <button
+            onClick={onRemove}
+            className="rounded-xl bg-red-50 p-2.5 text-red-600 hover:bg-red-100 dark:bg-red-950/30"
+            aria-label="Ne plus surveiller"
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -78,6 +78,7 @@ export function SettingsPage() {
   const [intervalH, setIntervalH] = useState(DEFAULT_INTERVAL_HOURS);
   const [refreshStatus, setRefreshStatus] = useState<AutoRefreshStatus | null>(null);
   const [testBusy, setTestBusy] = useState(false);
+  const [catWatch, setCatWatch] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -94,8 +95,21 @@ export function SettingsPage() {
       const iv = await getSetting('refreshIntervalHours');
       setIntervalH(iv ?? DEFAULT_INTERVAL_HOURS);
       setRefreshStatus(await getAutoRefreshStatus());
+      const cw = await getSetting('categoryWatchEnabled');
+      setCatWatch(cw ?? true);
     })();
   }, []);
+
+  async function toggleCatWatch(on: boolean) {
+    setCatWatch(on);
+    await setSetting('categoryWatchEnabled', on);
+    toast(
+      on
+        ? 'Surveillance des catégories activée (Fitness & Maison).'
+        : 'Surveillance des catégories désactivée.',
+      on ? 'success' : 'info',
+    );
+  }
 
   async function saveKey() {
     const trimmed = keyInput.trim();
@@ -359,6 +373,30 @@ export function SettingsPage() {
                   <option value={24}>Toutes les 24 heures</option>
                 </select>
               </Field>
+
+              {/* Surveillance des catégories fixes */}
+              <button
+                onClick={() => void toggleCatWatch(!catWatch)}
+                className="flex w-full items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 dark:bg-slate-800/60"
+              >
+                <span className="text-left">
+                  <span className="block text-sm font-medium">Surveillance des catégories</span>
+                  <span className="block text-xs text-slate-400">
+                    Fitness & bien-être + Maison & déco (2 req/cycle)
+                  </span>
+                </span>
+                <span
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                    catWatch ? 'bg-brand-600' : 'bg-slate-300 dark:bg-slate-600'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
+                      catWatch ? 'translate-x-[22px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </span>
+              </button>
 
               {/* Notifications */}
               {refreshStatus && refreshStatus.notificationPermission !== 'granted' && (
